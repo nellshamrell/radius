@@ -1,23 +1,38 @@
 {
-  "go.gopath": "${env:GOPATH}",
-  "go.useLanguageServer": true,
-  "go.delveConfig": {
-    "apiVersion": 2,
-    "showGlobalVariables": true
-  },
-  "files.associations": {
-    "*.yaml": "yaml",
-    "*.yml": "yaml"
-  },
-  "terminal.integrated.env.linux": {
-    "RADIUS_DEV_ROOT": "${workspaceFolder}/debug_files"
-  },
-  "terminal.integrated.env.osx": {
-    "RADIUS_DEV_ROOT": "${workspaceFolder}/debug_files"
-  },
-  "terminal.integrated.env.windows": {
-    "RADIUS_DEV_ROOT": "${workspaceFolder}/debug_files"
-  },
-  "makefile.configureOnOpen": false,
-  "typespec.tsp-server.path": "${workspaceFolder}/typespec/node_modules/@typespec/compiler"
+    "go.gopath": "${env:GOPATH}",
+    "go.useLanguageServer": true,
+    "go.delveConfig": {
+        "apiVersion": 2,
+        "showGlobalVariables": true
+    },
+    "files.associations": {
+        "*.yaml": "yaml",
+        "*.yml": "yaml"
+    },
+    "terminal.integrated.env.linux": {
+        "RADIUS_DEV_ROOT": "${workspaceFolder}/debug_files"
+    },
+    "terminal.integrated.env.osx": {
+        "RADIUS_DEV_ROOT": "${workspaceFolder}/debug_files"
+    },
+    "terminal.integrated.env.windows": {
+        "RADIUS_DEV_ROOT": "${workspaceFolder}/debug_files"
+    },
+    "makefile.configureOnOpen": false,
+    "typespec.tsp-server.path": "${workspaceFolder}/typespec/node_modules/@typespec/compiler",
+    "chat.promptFilesRecommendations": {
+        "speckit.constitution": true,
+        "speckit.specify": true,
+        "speckit.plan": true,
+        "speckit.tasks": true,
+        "speckit.implement": true
+    },
+    "chat.tools.terminal.autoApprove": {
+        ".specify/scripts/bash/": true,
+        ".specify/scripts/powershell/": true,
+        "/^cd /workspaces/radius && git rev-parse --git-dir 2>/dev/null && echo \"IS_GIT=true\" \\|\\| echo \"IS_GIT=false\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }
