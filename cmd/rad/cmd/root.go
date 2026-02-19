@@ -55,6 +55,8 @@ import (
 	env_update "github.com/radius-project/radius/pkg/cli/cmd/env/update"
 	env_update_preview "github.com/radius-project/radius/pkg/cli/cmd/env/update/preview"
 	group "github.com/radius-project/radius/pkg/cli/cmd/group"
+	aspire_cmd "github.com/radius-project/radius/pkg/cli/cmd/aspire"
+	aspire_convert "github.com/radius-project/radius/pkg/cli/cmd/aspire/convert"
 	"github.com/radius-project/radius/pkg/cli/cmd/install"
 	install_kubernetes "github.com/radius-project/radius/pkg/cli/cmd/install/kubernetes"
 	"github.com/radius-project/radius/pkg/cli/cmd/radinit"
@@ -425,6 +427,12 @@ func initSubCommands() {
 
 	bicepPublishExtensionCmd, _ := bicep_publishextension.NewCommand(framework)
 	bicepCmd.AddCommand(bicepPublishExtensionCmd)
+
+	aspireCmd := aspire_cmd.NewCommand()
+	RootCmd.AddCommand(aspireCmd)
+
+	aspireConvertCmd, _ := aspire_convert.NewCommand(framework)
+	aspireCmd.AddCommand(aspireConvertCmd)
 
 	installCmd := install.NewCommand()
 	RootCmd.AddCommand(installCmd)
