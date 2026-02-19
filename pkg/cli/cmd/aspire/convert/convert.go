@@ -19,8 +19,15 @@ package convert
 import (
 	"context"
 
+	"github.com/radius-project/radius/pkg/cli/clierrors"
+	"github.com/radius-project/radius/pkg/cli/filesystem"
 	"github.com/radius-project/radius/pkg/cli/framework"
+	"github.com/radius-project/radius/pkg/cli/output"
 	"github.com/spf13/cobra"
+)
+
+const (
+	defaultOutputFile = "app.bicep"
 )
 
 // NewCommand creates the `rad aspire convert` cobra command and its runner.
@@ -48,7 +55,7 @@ Unsupported resource types are skipped with a warning comment in the output.`,
 rad aspire convert aspire-manifest.json
 
 # Specify a custom output path
-rad aspire convert aspire-manifest.json --output my-app.bicep
+rad aspire convert aspire-manifest.json --out-file my-app.bicep
 
 # Overwrite an existing output file
 rad aspire convert aspire-manifest.json --force
@@ -59,29 +66,107 @@ rad aspire convert aspire-manifest.json --application my-aspire-app`,
 		RunE: framework.RunCommand(runner),
 	}
 
+	cmd.Flags().StringP("out-file", "", defaultOutputFile, "Output file path for the generated Bicep file.")
+	cmd.Flags().BoolP("force", "f", false, "Overwrite the output file if it already exists.")
+	cmd.Flags().StringP("application", "a", "", "Name of the Radius application resource. Defaults to a name derived from the manifest.")
+
 	return cmd, runner
 }
 
 // Runner is the runner implementation for the `rad aspire convert` command.
 type Runner struct {
-	factory framework.Factory
+	Output     output.Interface
+	FileSystem filesystem.FileSystem
+
+	// InputFile is the path to the Aspire manifest JSON file.
+	InputFile string
+
+	// OutputFile is the path where the generated Bicep file will be written.
+	OutputFile string
+
+	// Force indicates whether to overwrite an existing output file.
+	Force bool
+
+	// ApplicationName is an optional custom application name.
+	ApplicationName string
 }
 
 // NewRunner creates a new Runner for the convert command.
 func NewRunner(factory framework.Factory) *Runner {
 	return &Runner{
-		factory: factory,
+		Output: factory.GetOutput(),
 	}
 }
 
 // Validate checks the command arguments and flags.
 func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
-	// Will be implemented in Phase 2 / Phase 5
+	if r.FileSystem == nil {
+		r.FileSystem = filesystem.NewOSFS()
+	}
+
+	r.InputFile = args[0]
+
+	// Check that the input file exists.
+	if !r.FileSystem.Exists(r.InputFile) {
+		return clierrors.Message("file not found: %s", r.InputFile)
+	}
+
+	var err error
+	r.OutputFile, err = cmd.Flags().GetString("out-file")
+	if err != nil {
+		return err
+	}
+
+	r.Force, err = cmd.Flags().GetBool("force")
+	if err != nil {
+		return err
+	}
+
+	r.ApplicationName, err = cmd.Flags().GetString("application")
+	if err != nil {
+		return err
+	}
+
+	// Check for output file conflict (unless --force is set).
+	if !r.Force && r.FileSystem.Exists(r.OutputFile) {
+		return clierrors.Message("output file already exists: %s (use --force to overwrite)", r.OutputFile)
+	}
+
 	return nil
 }
 
 // Run executes the conversion pipeline: Parse → Map → Emit → Write.
 func (r *Runner) Run(ctx context.Context) error {
-	// Will be implemented in Phase 2 / Phase 5
+	r.Output.LogInfo("Converting Aspire manifest: %s", r.InputFile)
+
+	// Step 1: Read the manifest file.
+	data, err := r.FileSystem.ReadFile(r.InputFile)
+	if err != nil {
+		return clierrors.Message("failed to read manifest file: %s", err)
+	}
+
+	// Step 2: Parse the manifest JSON.
+	manifest, err := Parse(data)
+	if err != nil {
+		return clierrors.Message("invalid manifest: %s", err)
+	}
+
+	// Step 3: Map Aspire resources to Bicep IR.
+	bicepFile := MapManifest(manifest, r.ApplicationName)
+
+	// Step 4: Emit the Bicep text.
+	bicepText, err := Emit(bicepFile, r.InputFile)
+	if err != nil {
+		return clierrors.Message("failed to generate Bicep: %s", err)
+	}
+
+	// Step 5: Write the output file.
+	err = r.FileSystem.WriteFile(r.OutputFile, []byte(bicepText), 0644)
+	if err != nil {
+		return clierrors.Message("failed to write output file: %s", err)
+	}
+
+	r.Output.LogInfo("Generated: %s", r.OutputFile)
+
 	return nil
 }
