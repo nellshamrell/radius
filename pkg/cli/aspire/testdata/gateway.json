@@ -1,0 +1,32 @@
+{
+  "resources": {
+    "api": {
+      "type": "container.v0",
+      "image": "myapp/api:latest",
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 8080,
+          "targetPort": 8080
+        }
+      }
+    },
+    "frontend": {
+      "type": "container.v0",
+      "image": "myapp/frontend:latest",
+      "env": {
+        "API_URL": "{api.bindings.http.url}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 3000,
+          "targetPort": 3000,
+          "external": true
+        }
+      }
+    }
+  }
+}

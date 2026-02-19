@@ -1,0 +1,56 @@
+{
+  "resources": {
+    "api": {
+      "type": "container.v0",
+      "image": "myapp/api:latest",
+      "env": {
+        "REDIS_URL": "{cache.connectionString}",
+        "DB_URL": "{db.connectionString}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 8080,
+          "targetPort": 8080
+        }
+      }
+    },
+    "cache": {
+      "type": "container.v0",
+      "image": "redis:7",
+      "bindings": {
+        "tcp": {
+          "scheme": "tcp",
+          "protocol": "tcp",
+          "port": 6379,
+          "targetPort": 6379
+        }
+      }
+    },
+    "db": {
+      "type": "container.v0",
+      "image": "postgres:14",
+      "bindings": {
+        "tcp": {
+          "scheme": "tcp",
+          "protocol": "tcp",
+          "port": 5432,
+          "targetPort": 5432
+        }
+      }
+    },
+    "queue": {
+      "type": "container.v0",
+      "image": "rabbitmq:3-management",
+      "bindings": {
+        "tcp": {
+          "scheme": "tcp",
+          "protocol": "tcp",
+          "port": 5672,
+          "targetPort": 5672
+        }
+      }
+    }
+  }
+}

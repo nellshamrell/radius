@@ -1,0 +1,46 @@
+{
+  "resources": {
+    "webapp": {
+      "type": "project.v1",
+      "path": "WebApp/WebApp.csproj",
+      "env": {
+        "WORKER_URL": "{worker.bindings.http.url}",
+        "DB_SECRET": "{db-password}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 5000,
+          "targetPort": 5000
+        }
+      }
+    },
+    "worker": {
+      "type": "project.v1",
+      "path": "Worker/Worker.csproj",
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 5001,
+          "targetPort": 5001
+        }
+      }
+    },
+    "config": {
+      "type": "value.v0",
+      "connectionString": "Server=mydb;Database=app"
+    },
+    "db-password": {
+      "type": "parameter.v0",
+      "value": "",
+      "inputs": {
+        "value": {
+          "type": "string",
+          "secret": true
+        }
+      }
+    }
+  }
+}

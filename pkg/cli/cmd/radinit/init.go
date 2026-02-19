@@ -104,6 +104,15 @@ rad init --set-file global.rootCA.cert=/path/to/rootCA.crt
 	cmd.Flags().Bool("full", false, "Prompt user for all available configuration options")
 	cmd.Flags().StringArrayVar(&runner.Set, "set", []string{}, "Set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
 	cmd.Flags().StringArrayVar(&runner.SetFile, "set-file", []string{}, "Set values from files on the command line (can specify multiple or separate files with commas: key1=filename1,key2=filename2)")
+
+	// Aspire manifest translation flags.
+	cmd.Flags().StringVar(&runner.AspireManifestPath, "from-aspire-manifest", "", "Path to Aspire manifest JSON file; skips interactive init and performs manifest translation only")
+	cmd.Flags().StringVar(&runner.AspireAppName, "app-name", "app", "Name for the Radius application (used with --from-aspire-manifest)")
+	cmd.Flags().StringVar(&runner.AspireEnvironment, "aspire-environment", "default", "Radius environment name/ID (used with --from-aspire-manifest)")
+	cmd.Flags().StringArrayVar(&runner.AspireImageMappings, "image-mapping", []string{}, "Map project resources to images: <project-name>=<image-ref> (repeatable, used with --from-aspire-manifest)")
+	cmd.Flags().StringArrayVar(&runner.AspireResourceOverrides, "resource-override", []string{}, "Override resource type mapping: <resource-name>=<radius-type> (repeatable, used with --from-aspire-manifest)")
+	cmd.Flags().StringVar(&runner.AspireOutputDir, "output-dir", ".", "Directory to write generated app.bicep (used with --from-aspire-manifest)")
+
 	return cmd, runner
 }
 
@@ -153,6 +162,24 @@ type Runner struct {
 
 	// Options provides the options to used for Radius initialization. This will be populated by Validate.
 	Options *initOptions
+
+	// AspireManifestPath is the path to the Aspire manifest JSON file for translation mode.
+	AspireManifestPath string
+
+	// AspireAppName is the application name to use when translating the manifest.
+	AspireAppName string
+
+	// AspireEnvironment is the environment name to use when translating the manifest.
+	AspireEnvironment string
+
+	// AspireImageMappings maps project resource names to container image references.
+	AspireImageMappings []string
+
+	// AspireResourceOverrides maps resource names to explicit Radius resource types.
+	AspireResourceOverrides []string
+
+	// AspireOutputDir is the directory to write the generated app.bicep file.
+	AspireOutputDir string
 }
 
 // NewRunner creates a new instance of the `rad init` runner.
@@ -183,6 +210,11 @@ func NewRunner(factory framework.Factory) *Runner {
 // returning the options and workspace. If the user does not confirm the options, the function will loop and gather input again.
 // If an error occurs, the function will return an error.
 func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
+	// In Aspire manifest translation mode, skip interactive validation.
+	if r.isAspireMode() {
+		return nil
+	}
+
 	format, err := cli.RequireOutput(cmd)
 	if err != nil {
 		return err
@@ -226,6 +258,11 @@ func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
 // Run creates a progress channel, installs the radius control plane, creates an environment, configures cloud
 // providers, scaffolds an application, and updates the config file, all while displaying progress updates to the UI.
 func (r *Runner) Run(ctx context.Context) error {
+	// In Aspire manifest translation mode, skip Radius installation and just translate.
+	if r.isAspireMode() {
+		return r.runAspireTranslation(ctx)
+	}
+
 	config := r.ConfigFileInterface.ConfigFromContext(ctx)
 
 	// Use this channel to send progress updates to the UI.

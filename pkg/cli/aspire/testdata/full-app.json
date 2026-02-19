@@ -1,0 +1,111 @@
+{
+  "resources": {
+    "api": {
+      "type": "project.v1",
+      "path": "Api/Api.csproj",
+      "env": {
+        "REDIS_URL": "{cache.connectionString}",
+        "DB_CONN": "{db.connectionString}",
+        "QUEUE_URL": "{queue.connectionString}",
+        "HTTP_PORTS": "8080",
+        "API_KEY": "{api-key}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 8080,
+          "targetPort": 8080
+        }
+      }
+    },
+    "frontend": {
+      "type": "container.v0",
+      "image": "myapp/frontend:latest",
+      "env": {
+        "API_URL": "{api.bindings.http.url}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 3000,
+          "targetPort": 3000,
+          "external": true
+        }
+      }
+    },
+    "worker": {
+      "type": "project.v1",
+      "path": "Worker/Worker.csproj",
+      "env": {
+        "QUEUE_URL": "{queue.connectionString}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "port": 5001,
+          "targetPort": 5001
+        }
+      }
+    },
+    "cache": {
+      "type": "container.v0",
+      "image": "redis:7",
+      "bindings": {
+        "tcp": {
+          "scheme": "tcp",
+          "protocol": "tcp",
+          "port": 6379,
+          "targetPort": 6379
+        }
+      }
+    },
+    "db": {
+      "type": "container.v0",
+      "image": "postgres:14",
+      "env": {
+        "POSTGRES_DB": "appdb"
+      },
+      "bindings": {
+        "tcp": {
+          "scheme": "tcp",
+          "protocol": "tcp",
+          "port": 5432,
+          "targetPort": 5432
+        }
+      }
+    },
+    "queue": {
+      "type": "container.v0",
+      "image": "rabbitmq:3-management",
+      "bindings": {
+        "tcp": {
+          "scheme": "tcp",
+          "protocol": "tcp",
+          "port": 5672,
+          "targetPort": 5672
+        }
+      }
+    },
+    "config": {
+      "type": "value.v0",
+      "connectionString": "AppConfig=enabled"
+    },
+    "api-key": {
+      "type": "parameter.v0",
+      "value": "",
+      "inputs": {
+        "value": {
+          "type": "string",
+          "secret": true
+        }
+      }
+    },
+    "build-worker": {
+      "type": "executable.v0",
+      "command": "dotnet run"
+    }
+  }
+}
