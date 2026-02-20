@@ -182,6 +182,13 @@ type BicepGatewayRoute struct {
 	Port int
 }
 
+// BicepExpr represents a Bicep expression value (emitted without quotes).
+// Use this in BicepResource.Properties to indicate the value is a Bicep expression
+// rather than a string literal.
+type BicepExpr struct {
+	Expression string
+}
+
 // BicepComment is a comment block in the generated Bicep for skipped/unsupported resources.
 type BicepComment struct {
 	// ResourceName is the Aspire resource name that was skipped.
@@ -233,6 +240,8 @@ var bicepTemplateFuncs = template.FuncMap{
 	},
 	"formatPropertyValue": func(v any) string {
 		switch val := v.(type) {
+		case BicepExpr:
+			return val.Expression
 		case string:
 			return fmt.Sprintf("'%s'", val)
 		case bool:
@@ -279,32 +288,32 @@ resource {{.File.Application.SymbolicName}} '{{.File.Application.TypeName}}' = {
 {{- end}}
   }
 }
-{{range .File.Containers}}
-{{- if .NeedsBuildWarning}}
-// WARNING: {{.Name}} (container.v1) has a build configuration (context: '{{.BuildContext}}').
+{{range $c := .File.Containers}}
+{{- if $c.NeedsBuildWarning}}
+// WARNING: {{$c.Name}} (container.v1) has a build configuration (context: '{{$c.BuildContext}}').
 // Build and push the container image before deploying. For example:
-//   docker build -t <registry>/{{.Name}}:latest {{.BuildContext}}
-//   docker push <registry>/{{.Name}}:latest
+//   docker build -t <registry>/{{$c.Name}}:latest {{$c.BuildContext}}
+//   docker push <registry>/{{$c.Name}}:latest
 // Then update the 'image' property below with the pushed image reference.
 {{- end}}
-resource {{.SymbolicName}} '{{.TypeName}}' = {
-  name: '{{.Name}}'
+resource {{$c.SymbolicName}} '{{$c.TypeName}}' = {
+  name: '{{$c.Name}}'
   properties: {
-    application: {{.ApplicationRef}}
-    environment: {{.EnvironmentRef}}
+    application: {{$c.ApplicationRef}}
+    environment: {{$c.EnvironmentRef}}
     container: {
-      image: '{{.Image}}'
-{{- if .Command}}
+      image: '{{$c.Image}}'
+{{- if $c.Command}}
       command: [
-{{- range .Command}}
+{{- range $c.Command}}
         '{{.}}'
 {{- end}}
       ]
 {{- end}}
-{{- if .Ports}}
+{{- if $c.Ports}}
       ports: {
-{{- range $key := sortedKeys .Ports}}
-{{- $port := index $.Ports $key}}
+{{- range $key := sortedKeys $c.Ports}}
+{{- $port := index $c.Ports $key}}
         {{$key}}: {
           containerPort: {{$port.ContainerPort}}
           protocol: '{{$port.Protocol}}'
@@ -312,19 +321,19 @@ resource {{.SymbolicName}} '{{.TypeName}}' = {
 {{- end}}
       }
 {{- end}}
-{{- if .Env}}
+{{- if $c.Env}}
       env: {
-{{- range $key := sortedKeys .Env}}
-{{- $env := index $.Env $key}}
+{{- range $key := sortedKeys $c.Env}}
+{{- $env := index $c.Env $key}}
         {{$key}}: {{bicepValue $env}}
 {{- end}}
       }
 {{- end}}
     }
-{{- if .Connections}}
+{{- if $c.Connections}}
     connections: {
-{{- range $key := sortedKeys .Connections}}
-{{- $conn := index $.Connections $key}}
+{{- range $key := sortedKeys $c.Connections}}
+{{- $conn := index $c.Connections $key}}
       {{$key}}: {
         source: {{$conn.Source}}
       }
@@ -334,27 +343,27 @@ resource {{.SymbolicName}} '{{.TypeName}}' = {
   }
 }
 {{end}}
-{{- range .File.DataStores}}
-resource {{.SymbolicName}} '{{.TypeName}}' = {
-  name: '{{.Name}}'
+{{- range $ds := .File.DataStores}}
+resource {{$ds.SymbolicName}} '{{$ds.TypeName}}' = {
+  name: '{{$ds.Name}}'
   properties: {
-{{- range $key := sortedPropertyKeys .Properties}}
-    {{$key}}: {{formatPropertyValue (index $.Properties $key)}}
+{{- range $key := sortedPropertyKeys $ds.Properties}}
+    {{$key}}: {{formatPropertyValue (index $ds.Properties $key)}}
 {{- end}}
   }
 }
 {{end}}
-{{- range .File.Gateways}}
-resource {{.SymbolicName}} '{{.TypeName}}' = {
-  name: '{{.Name}}'
+{{- range $gw := .File.Gateways}}
+resource {{$gw.SymbolicName}} '{{$gw.TypeName}}' = {
+  name: '{{$gw.Name}}'
   properties: {
-    application: {{.ApplicationRef}}
-    environment: {{.EnvironmentRef}}
+    application: {{$gw.ApplicationRef}}
+    environment: {{$gw.EnvironmentRef}}
     routes: [
-{{- range .Routes}}
+{{- range $gw.Routes}}
       {
         path: '{{.Path}}'
-        destination: {{$.ContainerRef}}
+        destination: {{$gw.ContainerRef}}
         port: {{.Port}}
       }
 {{- end}}
