@@ -300,6 +300,45 @@ func Test_Parse(t *testing.T) {
 				assert.Equal(t, 80, b.TargetPort)
 			},
 		},
+		{
+			name: "resource with error field parses successfully",
+			input: `{
+				"resources": {
+					"docker-hub": {
+						"error": "This resource does not support generation in the manifest."
+					}
+				}
+			}`,
+			validate: func(t *testing.T, m *AspireManifest) {
+				t.Helper()
+				require.Len(t, m.Resources, 1)
+				r := m.Resources["docker-hub"]
+				assert.Equal(t, "docker-hub", r.Name)
+				assert.Equal(t, "", r.Type)
+				assert.Equal(t, "This resource does not support generation in the manifest.", r.Error)
+			},
+		},
+		{
+			name: "errored resource alongside valid resources",
+			input: `{
+				"resources": {
+					"api": {
+						"type": "container.v0",
+						"image": "api:latest"
+					},
+					"broken": {
+						"error": "Something went wrong."
+					}
+				}
+			}`,
+			validate: func(t *testing.T, m *AspireManifest) {
+				t.Helper()
+				require.Len(t, m.Resources, 2)
+				assert.Equal(t, "container.v0", m.Resources["api"].Type)
+				assert.Equal(t, "Something went wrong.", m.Resources["broken"].Error)
+				assert.Equal(t, "", m.Resources["broken"].Type)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -352,4 +391,30 @@ func Test_Parse_SampleManifest(t *testing.T) {
 
 	unsupported := manifest.Resources["cache-password-uri-encoded"]
 	assert.Equal(t, "annotated.string", unsupported.Type)
+}
+
+func Test_Parse_InvalidManifestFieldSample(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("testdata/aspire-manifest-invalid-manifest-field.json")
+	require.NoError(t, err)
+
+	manifest, err := Parse(data)
+	require.NoError(t, err)
+	require.NotNil(t, manifest)
+
+	assert.Len(t, manifest.Resources, 6)
+
+	// Errored resource should have Error set and no Type.
+	dockerHub := manifest.Resources["docker-hub"]
+	assert.Equal(t, "docker-hub", dockerHub.Name)
+	assert.Equal(t, "", dockerHub.Type)
+	assert.Equal(t, "This resource does not support generation in the manifest.", dockerHub.Error)
+
+	// Valid resources should still be parsed correctly.
+	cache := manifest.Resources["cache"]
+	assert.Equal(t, "container.v0", cache.Type)
+
+	app := manifest.Resources["app"]
+	assert.Equal(t, "container.v1", app.Type)
 }

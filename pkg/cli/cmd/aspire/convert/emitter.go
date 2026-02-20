@@ -372,7 +372,11 @@ resource {{$gw.SymbolicName}} '{{$gw.TypeName}}' = {
 }
 {{end}}
 {{- range .File.Comments}}
+{{- if .ResourceType}}
 // Unsupported: {{.ResourceName}} ({{.ResourceType}}) — {{.Message}}
+{{- else}}
+// Skipped: {{.ResourceName}} — {{.Message}}
+{{- end}}
 {{- end}}
 `
 

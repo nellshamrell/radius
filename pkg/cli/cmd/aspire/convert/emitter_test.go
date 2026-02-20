@@ -64,6 +64,37 @@ func Test_Emit_BasicGoldenFile(t *testing.T) {
 			"Update the golden file if the change is intentional.")
 }
 
+func Test_Emit_FullGoldenFile_InvalidManifestField(t *testing.T) {
+	t.Parallel()
+
+	// Step 1: Read the invalid manifest (contains an errored resource).
+	data, err := os.ReadFile("testdata/aspire-manifest-invalid-manifest-field.json")
+	require.NoError(t, err)
+
+	// Step 2: Parse the manifest.
+	manifest, err := Parse(data)
+	require.NoError(t, err)
+
+	// Step 3: Map to Bicep IR.
+	bicepFile := MapManifest(manifest, "")
+
+	// Step 4: Emit Bicep text.
+	got, err := Emit(bicepFile, "./aspire-manifest-invalid-manifest-field.json")
+	require.NoError(t, err)
+
+	// Step 5: Read the golden file.
+	expected, err := os.ReadFile("testdata/expected-full.bicep")
+	require.NoError(t, err)
+
+	// Normalize timestamps and line endings for comparison.
+	gotNormalized := normalizeTimestamp(strings.ReplaceAll(got, "\r\n", "\n"))
+	expectedNormalized := normalizeTimestamp(strings.ReplaceAll(string(expected), "\r\n", "\n"))
+
+	assert.Equal(t, expectedNormalized, gotNormalized,
+		"Emitted Bicep output does not match the golden file expected-full.bicep.\n"+
+			"Update the golden file if the change is intentional.")
+}
+
 func Test_Emit_EmptyContainers(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +293,96 @@ func Test_Emit_UnsupportedResourceComments(t *testing.T) {
 
 	assert.Contains(t, got, "// Unsupported: mystery (some.unknown.v99)")
 	assert.Contains(t, got, "manual configuration required")
+}
+
+func Test_Emit_ErroredResourceComments(t *testing.T) {
+	t.Parallel()
+
+	bicepFile := &BicepFile{
+		Extensions: []string{"radius"},
+		Parameters: []BicepParameter{
+			{
+				Name:        "environment",
+				Type:        "string",
+				Description: "Environment.",
+			},
+			{
+				Name:         "applicationName",
+				Type:         "string",
+				Description:  "App name.",
+				DefaultValue: "test",
+			},
+		},
+		Application: BicepResource{
+			SymbolicName: "app",
+			TypeName:     "Radius.Core/applications@2025-08-01-preview",
+			Name:         "applicationName",
+			Properties: map[string]any{
+				"environment": BicepExpr{Expression: "environment"},
+			},
+		},
+		Comments: []BicepComment{
+			{
+				ResourceName: "docker-hub",
+				ResourceType: "",
+				Message:      "manifest error: This resource does not support generation in the manifest.",
+			},
+		},
+	}
+
+	got, err := Emit(bicepFile, "test.json")
+	require.NoError(t, err)
+
+	assert.Contains(t, got, "// Skipped: docker-hub")
+	assert.Contains(t, got, "manifest error: This resource does not support generation in the manifest.")
+	assert.NotContains(t, got, "// Unsupported:")
+}
+
+func Test_Emit_MixedErroredAndUnsupportedComments(t *testing.T) {
+	t.Parallel()
+
+	bicepFile := &BicepFile{
+		Extensions: []string{"radius"},
+		Parameters: []BicepParameter{
+			{
+				Name:        "environment",
+				Type:        "string",
+				Description: "Environment.",
+			},
+			{
+				Name:         "applicationName",
+				Type:         "string",
+				Description:  "App name.",
+				DefaultValue: "test",
+			},
+		},
+		Application: BicepResource{
+			SymbolicName: "app",
+			TypeName:     "Radius.Core/applications@2025-08-01-preview",
+			Name:         "applicationName",
+			Properties: map[string]any{
+				"environment": BicepExpr{Expression: "environment"},
+			},
+		},
+		Comments: []BicepComment{
+			{
+				ResourceName: "cache-password-uri-encoded",
+				ResourceType: "annotated.string",
+				Message:      "manual configuration required",
+			},
+			{
+				ResourceName: "docker-hub",
+				ResourceType: "",
+				Message:      "manifest error: This resource does not support generation in the manifest.",
+			},
+		},
+	}
+
+	got, err := Emit(bicepFile, "test.json")
+	require.NoError(t, err)
+
+	assert.Contains(t, got, "// Unsupported: cache-password-uri-encoded (annotated.string)")
+	assert.Contains(t, got, "// Skipped: docker-hub")
 }
 
 func Test_Emit_SecureParameter(t *testing.T) {

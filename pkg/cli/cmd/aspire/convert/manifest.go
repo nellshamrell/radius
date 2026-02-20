@@ -66,6 +66,11 @@ type AspireResource struct {
 
 	// Inputs is a map of parameter inputs for parameter.v0 resources.
 	Inputs map[string]AspireInput `json:"inputs,omitempty"`
+
+	// Error is an error message from the Aspire manifest publisher.
+	// When non-empty, the resource could not be generated and has no Type field.
+	// Such resources should be skipped during conversion.
+	Error string `json:"error,omitempty"`
 }
 
 // AspireBinding is a network binding/endpoint on a container resource.
@@ -145,7 +150,9 @@ func Parse(data []byte) (*AspireManifest, error) {
 	for name, resource := range manifest.Resources {
 		resource.Name = name
 
-		if strings.TrimSpace(resource.Type) == "" {
+		// Resources with an error field (no type) are manifest-publisher errors;
+		// skip type validation for these — they will be handled during mapping.
+		if resource.Error == "" && strings.TrimSpace(resource.Type) == "" {
 			return nil, fmt.Errorf("resource %q is missing required field \"type\"", name)
 		}
 

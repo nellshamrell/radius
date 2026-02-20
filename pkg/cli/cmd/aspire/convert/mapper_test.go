@@ -872,4 +872,235 @@ func Test_MapManifest(t *testing.T) {
 				"extensions should be sorted: %v", bicepFile.Extensions)
 		}
 	})
+
+	t.Run("errored resource adds skipped comment and warning", func(t *testing.T) {
+		t.Parallel()
+
+		manifest := &AspireManifest{
+			Resources: map[string]AspireResource{
+				"docker-hub": {
+					Name:  "docker-hub",
+					Error: "This resource does not support generation in the manifest.",
+				},
+			},
+		}
+
+		bicepFile := MapManifest(manifest, "")
+		require.Len(t, bicepFile.Comments, 1)
+		assert.Equal(t, "docker-hub", bicepFile.Comments[0].ResourceName)
+		assert.Equal(t, "", bicepFile.Comments[0].ResourceType)
+		assert.Contains(t, bicepFile.Comments[0].Message, "manifest error")
+		assert.Contains(t, bicepFile.Comments[0].Message, "This resource does not support generation in the manifest.")
+		require.Len(t, bicepFile.Warnings, 1)
+		assert.Contains(t, bicepFile.Warnings[0], "manifest error")
+		assert.Contains(t, bicepFile.Warnings[0], "docker-hub")
+		// Should have no containers or data stores.
+		assert.Empty(t, bicepFile.Containers)
+		assert.Empty(t, bicepFile.DataStores)
+	})
+
+	t.Run("errored resource alongside valid resources", func(t *testing.T) {
+		t.Parallel()
+
+		manifest := &AspireManifest{
+			Resources: map[string]AspireResource{
+				"api": {
+					Name:  "api",
+					Type:  "container.v0",
+					Image: "api:latest",
+				},
+				"broken": {
+					Name:  "broken",
+					Error: "Something went wrong.",
+				},
+				"db": {
+					Name: "db",
+					Type: "redis.server.v0",
+				},
+			},
+		}
+
+		bicepFile := MapManifest(manifest, "")
+		// Valid resources should still be mapped.
+		assert.Len(t, bicepFile.Containers, 1)
+		assert.Len(t, bicepFile.DataStores, 1)
+		// Errored resource should produce a comment and warning.
+		require.Len(t, bicepFile.Comments, 1)
+		assert.Equal(t, "broken", bicepFile.Comments[0].ResourceName)
+		require.Len(t, bicepFile.Warnings, 1)
+		assert.Contains(t, bicepFile.Warnings[0], "broken")
+	})
+
+	t.Run("errored and unsupported resources produce separate comments", func(t *testing.T) {
+		t.Parallel()
+
+		manifest := &AspireManifest{
+			Resources: map[string]AspireResource{
+				"api": {
+					Name:  "api",
+					Type:  "container.v0",
+					Image: "api:latest",
+				},
+				"errored": {
+					Name:  "errored",
+					Error: "Publisher blew up.",
+				},
+				"unknown": {
+					Name: "unknown",
+					Type: "weird.thing.v42",
+				},
+			},
+		}
+
+		bicepFile := MapManifest(manifest, "")
+		assert.Len(t, bicepFile.Containers, 1)
+		require.Len(t, bicepFile.Comments, 2)
+
+		// Comments should be in sorted order (errored < unknown).
+		assert.Equal(t, "errored", bicepFile.Comments[0].ResourceName)
+		assert.Equal(t, "", bicepFile.Comments[0].ResourceType)
+		assert.Contains(t, bicepFile.Comments[0].Message, "manifest error")
+
+		assert.Equal(t, "unknown", bicepFile.Comments[1].ResourceName)
+		assert.Equal(t, "weird.thing.v42", bicepFile.Comments[1].ResourceType)
+		assert.Contains(t, bicepFile.Comments[1].Message, "manual configuration required")
+	})
+
+	t.Run("buildOnly resource is excluded from conversion", func(t *testing.T) {
+		t.Parallel()
+
+		manifest := &AspireManifest{
+			Resources: map[string]AspireResource{
+				"api": {
+					Name:  "api",
+					Type:  "container.v1",
+					Build: &AspireBuild{Context: "api", Dockerfile: "Dockerfile"},
+				},
+				"frontend": {
+					Name: "frontend",
+					Type: "container.v1",
+					Build: &AspireBuild{
+						Context:    "frontend",
+						Dockerfile: "frontend.Dockerfile",
+						BuildOnly:  true,
+					},
+				},
+			},
+		}
+
+		bicepFile := MapManifest(manifest, "")
+		// Only api should be converted — frontend is buildOnly.
+		require.Len(t, bicepFile.Containers, 1)
+		assert.Equal(t, "api", bicepFile.Containers[0].Name)
+
+		// frontend should produce a skipped comment and warning.
+		require.Len(t, bicepFile.Comments, 1)
+		assert.Equal(t, "frontend", bicepFile.Comments[0].ResourceName)
+		assert.Equal(t, "", bicepFile.Comments[0].ResourceType)
+		assert.Contains(t, bicepFile.Comments[0].Message, "build-only artifact")
+		assert.Contains(t, bicepFile.Comments[0].Message, "build.buildOnly: true")
+
+		require.Len(t, bicepFile.Warnings, 1)
+		assert.Contains(t, bicepFile.Warnings[0], "frontend")
+		assert.Contains(t, bicepFile.Warnings[0], "build-only artifact")
+	})
+
+	t.Run("buildOnly resource does not get gateway or connections", func(t *testing.T) {
+		t.Parallel()
+
+		manifest := &AspireManifest{
+			Resources: map[string]AspireResource{
+				"frontend": {
+					Name: "frontend",
+					Type: "container.v1",
+					Build: &AspireBuild{
+						Context:    "frontend",
+						Dockerfile: "Dockerfile",
+						BuildOnly:  true,
+					},
+					Bindings: map[string]AspireBinding{
+						"http": {
+							External:   true,
+							TargetPort: 3000,
+						},
+					},
+				},
+			},
+		}
+
+		bicepFile := MapManifest(manifest, "")
+		assert.Empty(t, bicepFile.Containers)
+		assert.Empty(t, bicepFile.Gateways)
+		require.Len(t, bicepFile.Comments, 1)
+		assert.Contains(t, bicepFile.Comments[0].Message, "build-only artifact")
+	})
+
+	t.Run("errored buildOnly and unsupported resources all produce separate comments", func(t *testing.T) {
+		t.Parallel()
+
+		manifest := &AspireManifest{
+			Resources: map[string]AspireResource{
+				"api": {
+					Name:  "api",
+					Type:  "container.v0",
+					Image: "api:latest",
+				},
+				"broken": {
+					Name:  "broken",
+					Error: "Cannot generate.",
+				},
+				"builder": {
+					Name: "builder",
+					Type: "container.v1",
+					Build: &AspireBuild{
+						Context:   "build",
+						BuildOnly: true,
+					},
+				},
+				"mystery": {
+					Name: "mystery",
+					Type: "alien.v99",
+				},
+			},
+		}
+
+		bicepFile := MapManifest(manifest, "")
+		assert.Len(t, bicepFile.Containers, 1)
+		require.Len(t, bicepFile.Comments, 3)
+		require.Len(t, bicepFile.Warnings, 3)
+
+		// In sorted resource name order: broken, builder, mystery.
+		assert.Equal(t, "broken", bicepFile.Comments[0].ResourceName)
+		assert.Contains(t, bicepFile.Comments[0].Message, "manifest error")
+
+		assert.Equal(t, "builder", bicepFile.Comments[1].ResourceName)
+		assert.Contains(t, bicepFile.Comments[1].Message, "build-only artifact")
+
+		assert.Equal(t, "mystery", bicepFile.Comments[2].ResourceName)
+		assert.Contains(t, bicepFile.Comments[2].Message, "manual configuration required")
+	})
+
+	t.Run("non-buildOnly build container still gets build warning", func(t *testing.T) {
+		t.Parallel()
+
+		manifest := &AspireManifest{
+			Resources: map[string]AspireResource{
+				"webapp": {
+					Name: "webapp",
+					Type: "container.v1",
+					Build: &AspireBuild{
+						Context:    "src/webapp",
+						Dockerfile: "Dockerfile",
+						BuildOnly:  false,
+					},
+				},
+			},
+		}
+
+		bicepFile := MapManifest(manifest, "")
+		require.Len(t, bicepFile.Containers, 1)
+		assert.True(t, bicepFile.Containers[0].NeedsBuildWarning)
+		assert.Equal(t, "src/webapp", bicepFile.Containers[0].BuildContext)
+		assert.Empty(t, bicepFile.Comments)
+	})
 }

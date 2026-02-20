@@ -252,8 +252,10 @@ container.Env[envKey] = resolveExpression(envVal, manifest, symNameMap)
 // Generate connections from env var references to other resources.
 container.Connections = generateConnections(name, resource, manifest, symNameMap)
 
-// Handle build warnings for container.v1.
-if resource.Build != nil {
+// Handle build warnings for container.v1 (FR-014).
+	// Only set NeedsBuildWarning when buildOnly is false or absent.
+	// BuildOnly resources are excluded before reaching this function (FR-019).
+	if resource.Build != nil && !resource.Build.BuildOnly {
 container.NeedsBuildWarning = true
 container.BuildContext = resource.Build.Context
 if container.Image == "" {
@@ -380,6 +382,18 @@ sort.Strings(resourceNames)
 
 for _, name := range resourceNames {
 resource := manifest.Resources[name]
+		// Skip errored resources — they have no type for mapping.
+		if resource.Error != "" {
+			symNameMap[name] = sanitizeBicepIdentifier(name)
+			continue
+		}
+
+		// Skip buildOnly resources — they are build-time artifacts, not runtime containers.
+		if resource.Build != nil && resource.Build.BuildOnly {
+			symNameMap[name] = sanitizeBicepIdentifier(name)
+			continue
+		}
+
 mapping := LookupResourceType(resource.Type)
 
 switch mapping.Category {
@@ -454,7 +468,37 @@ sort.Strings(resourceNames)
 
 for _, name := range resourceNames {
 resource := manifest.Resources[name]
-mapping := LookupResourceType(resource.Type)
+
+		// FR-018: Resources with an error field (no type) are manifest-publisher
+		// errors. Skip them with a distinct warning before type-based mapping.
+		if resource.Error != "" {
+			file.Comments = append(file.Comments, BicepComment{
+				ResourceName: name,
+				ResourceType: "",
+				Message:      fmt.Sprintf("manifest error: %s", resource.Error),
+			})
+			file.Warnings = append(file.Warnings, fmt.Sprintf(
+				"resource %q: manifest error — %s",
+				name, resource.Error,
+			))
+			continue
+		}
+		mapping := LookupResourceType(resource.Type)
+
+		// FR-019: Resources with build.buildOnly=true are build-time-only artifacts.
+		// Skip them entirely before normal container mapping.
+		if resource.Build != nil && resource.Build.BuildOnly {
+			file.Comments = append(file.Comments, BicepComment{
+				ResourceName: name,
+				ResourceType: "",
+				Message:      "build-only artifact (build.buildOnly: true), not a runtime container",
+			})
+			file.Warnings = append(file.Warnings, fmt.Sprintf(
+				"resource %q (%s): skipped — build-only artifact (build.buildOnly: true)",
+				name, resource.Type,
+			))
+			continue
+		}
 
 switch mapping.Category {
 case categoryContainer:
