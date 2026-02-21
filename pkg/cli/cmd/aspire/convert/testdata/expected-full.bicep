@@ -50,11 +50,10 @@ resource appContainer 'Radius.Compute/containers@2025-08-01-preview' = {
       }
       env: {
         CACHE_HOST: 'cache'
-        CACHE_PORT: '6379'
         CACHE_PASSWORD: cache_password
+        CACHE_PORT: '6379'
         CACHE_URI: 'redis://:${cache_password_uri_encoded}@cache:6379'
         ConnectionStrings__cache: 'redis://:${cache_password_uri_encoded}@cache:6379'
-
         OTEL_LOGS_EXPORTER: 'otlp'
         OTEL_METRICS_EXPORTER: 'otlp'
         OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: 'true'

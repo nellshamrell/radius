@@ -71,6 +71,11 @@ type AspireResource struct {
 	// When non-empty, the resource could not be generated and has no Type field.
 	// Such resources should be skipped during conversion.
 	Error string `json:"error,omitempty"`
+
+	// Filter is the filter type for annotated.string resources (e.g., "uri").
+	// When present with filter: "uri", the resource's value should be wrapped
+	// in a uriComponent() Bicep function call.
+	Filter string `json:"filter,omitempty"`
 }
 
 // AspireBinding is a network binding/endpoint on a container resource.
@@ -113,6 +118,9 @@ type AspireInput struct {
 
 	// Secret indicates whether this input is a secret value.
 	Secret bool `json:"secret,omitempty"`
+
+	// Description is an optional human-readable description of the input.
+	Description string `json:"description,omitempty"`
 
 	// Default is the default value configuration.
 	Default *AspireInputDefault `json:"default,omitempty"`

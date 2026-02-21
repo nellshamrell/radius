@@ -3,7 +3,7 @@
   "resources": {
     "cache": {
       "type": "container.v0",
-      "connectionString": "{cache.bindings.tcp.host}:{cache.bindings.tcp.port},password={cache-password.value}",
+      "connectionString": "redis://:{cache-password-uri-encoded.value}@{cache.bindings.tcp.host}:{cache.bindings.tcp.port}",
       "image": "docker.io/library/redis:8.2",
       "entrypoint": "/bin/sh",
       "args": [
@@ -94,6 +94,7 @@
         "value": {
           "type": "string",
           "secret": true,
+          "description": "Redis password for the cache container.",
           "default": {
             "generate": {
               "minLength": 22,

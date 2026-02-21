@@ -48,7 +48,7 @@ func Test_Emit_BasicGoldenFile(t *testing.T) {
 	bicepFile := MapManifest(manifest, "")
 
 	// Step 4: Emit Bicep text.
-	got, err := Emit(bicepFile, "./aspire-manifest.json")
+	got, err := Emit(bicepFile, "aspire-manifest.json")
 	require.NoError(t, err)
 
 	// Step 5: Read the golden file.
@@ -79,7 +79,7 @@ func Test_Emit_FullGoldenFile_InvalidManifestField(t *testing.T) {
 	bicepFile := MapManifest(manifest, "")
 
 	// Step 4: Emit Bicep text.
-	got, err := Emit(bicepFile, "./aspire-manifest-invalid-manifest-field.json")
+	got, err := Emit(bicepFile, "aspire-manifest-invalid-manifest-field.json")
 	require.NoError(t, err)
 
 	// Step 5: Read the golden file.
@@ -472,4 +472,59 @@ func Test_Emit_BuildWarningComment(t *testing.T) {
 
 	assert.Contains(t, got, "// WARNING: webapp (container.v1) has a build configuration")
 	assert.Contains(t, got, "src/webapp")
+}
+
+func Test_Emit_DescriptionWithSingleQuotes(t *testing.T) {
+	t.Parallel()
+
+	// Verify that single quotes in @description() values are escaped by doubling
+	// them (''), preventing invalid Bicep output (FR-022).
+	bicepFile := &BicepFile{
+		Extensions: []string{"radius"},
+		Parameters: []BicepParameter{
+			{
+				Name:        "environment",
+				Type:        "string",
+				Description: "Environment.",
+			},
+			{
+				Name:         "applicationName",
+				Type:         "string",
+				Description:  "App name.",
+				DefaultValue: "test",
+			},
+			{
+				Name:        "cache_password",
+				Type:        "string",
+				Secure:      true,
+				Description: "Value of parameter 'cache-password'.",
+			},
+		},
+		Variables: []BicepVariable{
+			{
+				Name:        "cache_password_uri_encoded",
+				Expression:  "uriComponent(cache_password)",
+				Description: "URI-encoded value of 'cache_password'.",
+			},
+		},
+		Application: BicepResource{
+			SymbolicName: "app",
+			TypeName:     "Radius.Core/applications@2025-08-01-preview",
+			Name:         "applicationName",
+			Properties: map[string]any{
+				"environment": BicepExpr{Expression: "environment"},
+			},
+		},
+	}
+
+	got, err := Emit(bicepFile, "test.json")
+	require.NoError(t, err)
+
+	// Single quotes inside @description() must be doubled for valid Bicep.
+	assert.Contains(t, got, "@description('Value of parameter ''cache-password''.')")
+	assert.Contains(t, got, "@description('URI-encoded value of ''cache_password''.')")
+
+	// Must NOT contain the un-escaped version.
+	assert.NotContains(t, got, "@description('Value of parameter 'cache-password'.')")
+	assert.NotContains(t, got, "@description('URI-encoded value of 'cache_password'.')")
 }

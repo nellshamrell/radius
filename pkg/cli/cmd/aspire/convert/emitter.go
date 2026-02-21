@@ -27,11 +27,14 @@ import (
 
 // BicepFile is the complete Bicep file intermediate representation to be emitted.
 type BicepFile struct {
-	// Extensions is the list of required Bicep extension names (e.g., radius, containers).
+	// Extensions is the list of required Bicep extension names. In practice, only "radius" is needed.
 	Extensions []string
 
 	// Parameters is the list of declared Bicep parameters.
 	Parameters []BicepParameter
+
+	// Variables is the list of declared Bicep variables (e.g., uriComponent() wrappers).
+	Variables []BicepVariable
 
 	// Application is the Radius application resource.
 	Application BicepResource
@@ -139,8 +142,15 @@ type BicepEnvVar struct {
 	Value string
 
 	// BicepExpression is a Bicep expression (if resolved from an Aspire reference).
-	// Only one of Value or BicepExpression is set.
+	// Only one of Value, BicepExpression, or StringInterpolation is set.
 	BicepExpression string
+
+	// StringInterpolation is a Bicep string interpolation expression
+	// (e.g., 'redis://:${cache_password_uri_encoded}@cache:6379').
+	// Used when the resolved value contains embedded Bicep variable/parameter
+	// references mixed with literals. Only one of Value, BicepExpression, or
+	// StringInterpolation is set.
+	StringInterpolation string
 }
 
 // BicepConnection is a Radius connection to another resource.
@@ -201,6 +211,19 @@ type BicepComment struct {
 	Message string
 }
 
+// BicepVariable is a Bicep variable declaration generated from annotated.string
+// resources or other computed values.
+type BicepVariable struct {
+	// Name is the variable name (e.g., cache_password_uri_encoded).
+	Name string
+
+	// Expression is the Bicep expression assigned to the variable (e.g., uriComponent(cache_password)).
+	Expression string
+
+	// Description is an optional description for @description() decorator.
+	Description string
+}
+
 // sortedKeys returns the keys of a map in sorted order.
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
@@ -258,10 +281,18 @@ var bicepTemplateFuncs = template.FuncMap{
 		}
 	},
 	"bicepValue": func(ev BicepEnvVar) string {
+		if ev.StringInterpolation != "" {
+			return ev.StringInterpolation
+		}
 		if ev.BicepExpression != "" {
 			return ev.BicepExpression
 		}
 		return fmt.Sprintf("'%s'", ev.Value)
+	},
+	// escapeBicepString escapes single quotes for use inside Bicep single-quoted
+	// string literals by doubling them (' → ''), per FR-022.
+	"escapeBicepString": func(s string) string {
+		return strings.ReplaceAll(s, "'", "''")
 	},
 }
 
@@ -276,8 +307,13 @@ extension {{.}}
 
 @secure()
 {{- end}}
-@description('{{.Description}}')
+@description('{{escapeBicepString .Description}}')
 param {{.Name}} {{.Type}}{{if .DefaultValue}} = '{{.DefaultValue}}'{{end}}
+{{- end}}
+{{- range .File.Variables}}
+
+@description('{{escapeBicepString .Description}}')
+var {{.Name}} = {{.Expression}}
 {{- end}}
 
 resource {{.File.Application.SymbolicName}} '{{.File.Application.TypeName}}' = {

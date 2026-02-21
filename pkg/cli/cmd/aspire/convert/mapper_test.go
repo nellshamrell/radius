@@ -210,12 +210,12 @@ func Test_ResolveExpression(t *testing.T) {
 		{
 			name:          "binding targetPort reference",
 			expr:          "{cache.bindings.tcp.targetPort}",
-			wantBicepExpr: "'6379'",
+			wantValue:     "6379",
 		},
 		{
 			name:          "binding host reference",
 			expr:          "{cache.bindings.tcp.host}",
-			wantBicepExpr: "cache.id",
+			wantValue:     "cache",
 		},
 		{
 			name:          "connectionString reference",
@@ -738,9 +738,8 @@ func Test_MapManifest(t *testing.T) {
 		require.Len(t, bicepFile.DataStores, 1)
 		assert.Equal(t, "cache", bicepFile.DataStores[0].SymbolicName)
 
-		// Extensions: should include containers and radius.
-		assert.Contains(t, bicepFile.Extensions, "containers")
-		assert.Contains(t, bicepFile.Extensions, "radius")
+		// Extensions: should only include radius.
+		assert.Equal(t, []string{"radius"}, bicepFile.Extensions)
 	})
 
 	t.Run("custom application name", func(t *testing.T) {
@@ -866,11 +865,8 @@ func Test_MapManifest(t *testing.T) {
 		}
 
 		bicepFile := MapManifest(manifest, "")
-		// Should have containers, radius, radiusResources — sorted.
-		for i := 0; i < len(bicepFile.Extensions)-1; i++ {
-			assert.True(t, bicepFile.Extensions[i] < bicepFile.Extensions[i+1],
-				"extensions should be sorted: %v", bicepFile.Extensions)
-		}
+		// Extensions should only be ["radius"] — all resource types use the single radius extension.
+		assert.Equal(t, []string{"radius"}, bicepFile.Extensions)
 	})
 
 	t.Run("errored resource adds skipped comment and warning", func(t *testing.T) {

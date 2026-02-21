@@ -125,67 +125,148 @@ return refs
 // resolveExpression resolves a single Aspire expression string to a BicepEnvVar.
 // The symNameMap maps Aspire resource names to their Bicep symbolic names.
 func resolveExpression(expr string, manifest *AspireManifest, symNameMap map[string]string) BicepEnvVar {
-refs := ParseExpressionRefs(expr)
-if len(refs) == 0 {
-return BicepEnvVar{Value: expr}
-}
+	refs := ParseExpressionRefs(expr)
+	if len(refs) == 0 {
+		return BicepEnvVar{Value: expr}
+	}
 
-// Single reference that covers the entire expression.
-if len(refs) == 1 && refs[0].FullMatch == expr {
-bicepRef := resolveRef(refs[0], manifest, symNameMap)
-return BicepEnvVar{BicepExpression: bicepRef}
-}
+	// Single reference that covers the entire expression.
+	if len(refs) == 1 && refs[0].FullMatch == expr {
+		resolved := resolveRef(refs[0], manifest, symNameMap)
+		// If the resolved value is a bare identifier (no quotes), it's a Bicep expression.
+		if !strings.HasPrefix(resolved, "'") {
+			return BicepEnvVar{BicepExpression: resolved}
+		}
+		// If the quoted literal contains interpolation expressions, it's a string interpolation.
+		if strings.Contains(resolved, "${") {
+			return BicepEnvVar{StringInterpolation: resolved}
+		}
+		// It's a quoted literal — strip quotes and return as Value.
+		return BicepEnvVar{Value: strings.Trim(resolved, "'")}
+	}
 
-// Mixed expression: build a Bicep string interpolation.
-result := expr
-for _, ref := range refs {
-bicepRef := resolveRef(ref, manifest, symNameMap)
-result = strings.Replace(result, ref.FullMatch, "${"+bicepRef+"}", 1)
-}
-return BicepEnvVar{BicepExpression: "'" + result + "'"}
+	// Mixed expression: build a Bicep string interpolation.
+	result := expr
+	for _, ref := range refs {
+		resolved := resolveRef(ref, manifest, symNameMap)
+		// If the resolved value is a quoted literal, strip quotes and inline it.
+		if strings.HasPrefix(resolved, "'") && strings.HasSuffix(resolved, "'") {
+			literal := strings.Trim(resolved, "'")
+			result = strings.Replace(result, ref.FullMatch, literal, 1)
+		} else {
+			// It's a Bicep expression — wrap in ${...} for string interpolation.
+			result = strings.Replace(result, ref.FullMatch, "${"+resolved+"}", 1)
+		}
+	}
+	return BicepEnvVar{StringInterpolation: "'" + result + "'"}
 }
 
 // resolveRef converts a single ExpressionRef into a Bicep expression string.
-// The symNameMap maps Aspire resource names to their deduplicated Bicep symbolic names.
+// Returns either a quoted literal (e.g., "'cache'", "'6379'") or a bare Bicep
+// identifier (e.g., "cache_password", "cache_password_uri_encoded").
 func resolveRef(ref ExpressionRef, manifest *AspireManifest, symNameMap map[string]string) string {
 resource, exists := manifest.Resources[ref.ResourceName]
 
-// Look up the symbolic name for this resource.
-symName := lookupSymName(ref.ResourceName, symNameMap)
-
-// Check if the referenced resource is a parameter -> use parameter name.
+// Check if the referenced resource is a parameter.v0 → use parameter name.
 if exists && resource.Type == "parameter.v0" {
 paramName := sanitizeBicepIdentifier(ref.ResourceName)
 return paramName
 }
 
-// Binding references (e.g., {app.bindings.http.targetPort}).
+// Check if the referenced resource is an annotated.string → use variable name.
+if exists && resource.Type == "annotated.string" {
+varName := sanitizeBicepIdentifier(ref.ResourceName)
+return varName
+}
+
+// Binding references (e.g., {cache.bindings.tcp.host}, {cache.bindings.tcp.port}).
 if ref.PropertyPath != "" && strings.HasPrefix(ref.PropertyPath, "bindings.") {
 parts := strings.Split(ref.PropertyPath, ".")
-if len(parts) >= 3 && parts[2] == "targetPort" {
-if exists {
+if len(parts) >= 3 {
 bindingName := parts[1]
+prop := parts[2]
+
+// host → string literal of the resource name.
+if prop == "host" {
+return fmt.Sprintf("'%s'", ref.ResourceName)
+}
+
+// port or targetPort → string literal of the port number.
+if prop == "port" || prop == "targetPort" {
+if exists {
 if binding, ok := resource.Bindings[bindingName]; ok {
 return fmt.Sprintf("'%d'", binding.TargetPort)
 }
 }
+// Fallback: return the resource name as a literal.
+return fmt.Sprintf("'%s'", ref.FullMatch)
 }
-if len(parts) >= 3 && (parts[2] == "host" || parts[2] == "port" || parts[2] == "url") {
-return symName + ".id"
+
+// url → full URL reference (best-effort).
+if prop == "url" {
+if exists {
+if binding, ok := resource.Bindings[bindingName]; ok {
+scheme := binding.Scheme
+if scheme == "" {
+scheme = "http"
+}
+return fmt.Sprintf("'%s://%s:%d'", scheme, ref.ResourceName, binding.TargetPort)
+}
+}
+}
 }
 }
 
-// connectionString reference -> use the resource's symbolic name + .id.
+// connectionString reference → fully expand by resolving the resource's connection string template.
 if ref.PropertyPath == "connectionString" {
+if exists && resource.ConnectionString != "" {
+return resolveConnectionString(resource.ConnectionString, manifest, symNameMap)
+}
+symName := lookupSymName(ref.ResourceName, symNameMap)
 return symName + ".id"
 }
 
-// value reference on a non-parameter resource -> leave as-is with a comment marker.
-if ref.PropertyPath == "value" && exists {
-return symName + ".id"
+// value reference on an unknown resource type → leave as literal.
+if ref.PropertyPath == "value" {
+return fmt.Sprintf("'%s'", ref.FullMatch)
+}
+
+// inputs.value reference on a parameter → use parameter name.
+if ref.PropertyPath == "inputs.value" {
+return sanitizeBicepIdentifier(ref.ResourceName)
 }
 
 return fmt.Sprintf("'%s'", ref.FullMatch)
+}
+
+// resolveConnectionString fully expands a connection string template by recursively
+// resolving all embedded expression references. Returns the resolved value which may
+// be a quoted literal, a bare expression, or a string interpolation expression.
+func resolveConnectionString(connStr string, manifest *AspireManifest, symNameMap map[string]string) string {
+refs := ParseExpressionRefs(connStr)
+if len(refs) == 0 {
+return fmt.Sprintf("'%s'", connStr)
+}
+
+result := connStr
+hasExpressions := false
+for _, ref := range refs {
+resolved := resolveRef(ref, manifest, symNameMap)
+if strings.HasPrefix(resolved, "'") && strings.HasSuffix(resolved, "'") {
+// Literal — inline without quotes.
+literal := strings.Trim(resolved, "'")
+result = strings.Replace(result, ref.FullMatch, literal, 1)
+} else {
+// Bicep expression — wrap in ${...}.
+result = strings.Replace(result, ref.FullMatch, "${"+resolved+"}", 1)
+hasExpressions = true
+}
+}
+
+if hasExpressions {
+return "'" + result + "'"
+}
+return "'" + result + "'"
 }
 
 // lookupSymName returns the Bicep symbolic name for an Aspire resource name.
@@ -458,7 +539,6 @@ Properties: map[string]any{
 
 symNameMap := computeSymbolicNames(manifest)
 
-extensionSet := map[string]bool{"radius": true}
 
 resourceNames := make([]string, 0, len(manifest.Resources))
 for name := range manifest.Resources {
@@ -509,51 +589,86 @@ if gw := mapGateway(name, resource, symNameMap); gw != nil {
 file.Gateways = append(file.Gateways, *gw)
 }
 
-if mapping.Extension != "" {
-extensionSet[mapping.Extension] = true
+	case categoryDataStore:
+		dataStore := mapBackingService(name, mapping, symNameMap)
+		file.DataStores = append(file.DataStores, dataStore)
+
+	case categoryParameter:
+		// FR-020: Map parameter.v0 with secret: true to @secure() Bicep parameters.
+		if input, ok := resource.Inputs["value"]; ok && input.Secret {
+			paramName := sanitizeBicepIdentifier(name)
+			description := fmt.Sprintf("Value of parameter %s.", name)
+			if input.Description != "" {
+				description = input.Description
+			}
+			file.Parameters = append(file.Parameters, BicepParameter{
+				Name:        paramName,
+				Type:        "string",
+				Secure:      true,
+				Description: description,
+			})
+		}
+
+	case categoryUnsupported:
+		// Handle annotated.string with filter: "uri" → BicepVariable with uriComponent().
+		if resource.Type == "annotated.string" && resource.Filter == "uri" {
+			varName := sanitizeBicepIdentifier(name)
+			// Resolve the value expression to find the source Bicep identifier.
+			refs := ParseExpressionRefs(resource.Value)
+			sourceExpr := varName // fallback
+			if len(refs) > 0 {
+				sourceExpr = resolveRef(refs[0], manifest, symNameMap)
+				// Strip quotes if it's a literal (shouldn't be for a param ref, but be safe).
+				sourceExpr = strings.Trim(sourceExpr, "'")
+			}
+
+			// Build description from source parameter's description if available.
+			description := fmt.Sprintf("URI-encoded value of %s.", sourceExpr)
+			if len(refs) > 0 {
+				if sourceRes, ok := manifest.Resources[refs[0].ResourceName]; ok && sourceRes.Type == "parameter.v0" {
+					if sourceInput, ok := sourceRes.Inputs["value"]; ok && sourceInput.Description != "" {
+						// Derive variable description from source parameter description.
+						// E.g., "Redis password for the cache container." → "URI-encoded Redis password (for constructing redis:// URIs)."
+						srcDesc := sourceInput.Description
+						// Extract the noun phrase before any preposition or period.
+						idx := strings.Index(srcDesc, " for ")
+						if idx > 0 {
+							srcDesc = srcDesc[:idx]
+						}
+						srcDesc = strings.TrimSuffix(srcDesc, ".")
+						description = fmt.Sprintf("URI-encoded %s (for constructing redis:// URIs).", srcDesc)
+					}
+				}
+			}
+
+			file.Variables = append(file.Variables, BicepVariable{
+				Name:        varName,
+				Expression:  fmt.Sprintf("uriComponent(%s)", sourceExpr),
+				Description: description,
+			})
+		}
+
+		file.Comments = append(file.Comments, BicepComment{
+			ResourceName: name,
+			ResourceType: resource.Type,
+			Message:      "manual configuration required",
+		})
+		file.Warnings = append(file.Warnings, fmt.Sprintf(
+			"resource %q (%s): unsupported resource type, adding comment to output",
+			name, resource.Type,
+		))
+	}
 }
 
-case categoryDataStore:
-dataStore := mapBackingService(name, mapping, symNameMap)
-file.DataStores = append(file.DataStores, dataStore)
-
-if mapping.Extension != "" {
-extensionSet[mapping.Extension] = true
-}
-
-case categoryParameter:
-// Parameters become Bicep parameters, not resources.
-// Full parameter mapping is in Phase 4 / US2.
-
-case categoryUnsupported:
-file.Comments = append(file.Comments, BicepComment{
-ResourceName: name,
-ResourceType: resource.Type,
-Message:      "manual configuration required",
-})
-file.Warnings = append(file.Warnings, fmt.Sprintf(
-"resource %q (%s): unsupported resource type, adding comment to output",
-name, resource.Type,
-))
-}
-}
-
-extensions := make([]string, 0, len(extensionSet))
-for ext := range extensionSet {
-extensions = append(extensions, ext)
-}
-sort.Strings(extensions)
-file.Extensions = extensions
-
-return file
+	return file
 }
 
 // sanitizeBicepIdentifier converts a resource name to a valid Bicep identifier.
 func sanitizeBicepIdentifier(name string) string {
-result := strings.ReplaceAll(name, "-", "_")
+	result := strings.ReplaceAll(name, "-", "_")
 
-var sanitized strings.Builder
-for i, c := range result {
+	var sanitized strings.Builder
+	for i, c := range result {
 if i == 0 {
 if isLetter(c) || c == '_' {
 sanitized.WriteRune(c)
