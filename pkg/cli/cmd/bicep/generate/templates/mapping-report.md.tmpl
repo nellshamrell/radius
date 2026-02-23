@@ -1,0 +1,47 @@
+# Mapping Report: Aspire-to-Bicep Conversion
+
+**Source**: {{ .Report.SourceDirectory }}
+**Generated**: {{ .Timestamp }}
+**Output**: {{ .Report.OutputFile }}
+
+## Resource Summary
+
+| # | Radius Resource | Type | Source File | Source Resource |
+|---|----------------|------|-------------|----------------|
+{{- range $i, $entry := resourceSummary .Report.Entries }}
+| {{ add $i 1 }} | {{ $entry.TargetResource }} | {{ $entry.TargetField }} | {{ $entry.SourceFile }} | {{ $entry.SourceField }} |
+{{- end }}
+
+## Field-Level Mapping
+{{ range $resource, $entries := groupByResource .Report.Entries }}
+### {{ $resource }}
+
+| Target Field | Value | Source File | Source Field | Status |
+|-------------|-------|-------------|-------------|--------|
+{{- range $entries }}
+| {{ .TargetField }} | {{ .Value }} | {{ .SourceFile }} | {{ .SourceField }} | {{ mappingStatus . }} |
+{{- end }}
+{{ end }}
+## Gaps
+
+| Resource | Field | Expected Source | Status | Action Required |
+|----------|-------|----------------|--------|-----------------|
+{{- if .Report.Gaps }}
+{{- range .Report.Gaps }}
+| {{ .TargetResource }} | {{ .TargetField }} | {{ .SourceField }} | Missing | {{ .GapMessage }} |
+{{- end }}
+{{- else }}
+| (none) | — | — | — | — |
+{{- end }}
+
+## Assumptions
+
+| Resource | Field | Default Value | Rationale |
+|----------|-------|---------------|-----------|
+{{- if .Report.Assumptions }}
+{{- range .Report.Assumptions }}
+| {{ .TargetResource }} | {{ .TargetField }} | {{ .Value }} | {{ .GapMessage }} |
+{{- end }}
+{{- else }}
+| (none) | — | — | — |
+{{- end }}

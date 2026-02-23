@@ -36,6 +36,7 @@ import (
 	app_list "github.com/radius-project/radius/pkg/cli/cmd/app/list"
 	app_show "github.com/radius-project/radius/pkg/cli/cmd/app/show"
 	app_status "github.com/radius-project/radius/pkg/cli/cmd/app/status"
+	bicep_generate "github.com/radius-project/radius/pkg/cli/cmd/bicep/generate"
 	bicep_generate_kubernetes_manifest "github.com/radius-project/radius/pkg/cli/cmd/bicep/generatekubernetesmanifest"
 	bicep_publish "github.com/radius-project/radius/pkg/cli/cmd/bicep/publish"
 	bicep_publishextension "github.com/radius-project/radius/pkg/cli/cmd/bicep/publishextension"
@@ -419,6 +420,9 @@ func initSubCommands() {
 
 	bicepPublishCmd, _ := bicep_publish.NewCommand(framework)
 	bicepCmd.AddCommand(bicepPublishCmd)
+
+	bicepGenerateCmd, _ := bicep_generate.NewCommand(framework)
+	bicepCmd.AddCommand(bicepGenerateCmd)
 
 	bicepGenerateKubernetesManifestCmd, _ := bicep_generate_kubernetes_manifest.NewCommand(framework)
 	bicepCmd.AddCommand(bicepGenerateKubernetesManifestCmd)
