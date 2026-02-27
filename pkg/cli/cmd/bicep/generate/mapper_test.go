@@ -27,7 +27,7 @@ func Test_MapToRadius_ExampleAspireApp(t *testing.T) {
 	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
 	require.NoError(t, err)
 
-	app, err := MapToRadius(descriptor, map[string]string{})
+	app, err := MapToRadius(descriptor, "")
 	require.NoError(t, err)
 
 	t.Run("application name derived from directory", func(t *testing.T) {
@@ -46,7 +46,7 @@ func Test_MapToRadius_ExampleAspireApp(t *testing.T) {
 		api, ok := containersByName["apiservice"]
 		require.True(t, ok, "should have apiservice container")
 		assert.Equal(t, "apiserviceImage", api.ImageParam)
-		assert.Equal(t, "apiservice:latest", api.ImageDefault)
+		assert.Equal(t, "IMAGE_PLACEHOLDER", api.ImageDefault)
 		require.Len(t, api.Ports, 1)
 		assert.Equal(t, 8080, api.Ports[0].ContainerPort)
 		assert.Equal(t, "TCP", api.Ports[0].Protocol)
@@ -55,7 +55,7 @@ func Test_MapToRadius_ExampleAspireApp(t *testing.T) {
 		web, ok := containersByName["webfrontend"]
 		require.True(t, ok, "should have webfrontend container")
 		assert.Equal(t, "webfrontendImage", web.ImageParam)
-		assert.Equal(t, "webfrontend:latest", web.ImageDefault)
+		assert.Equal(t, "IMAGE_PLACEHOLDER", web.ImageDefault)
 		require.Len(t, web.Ports, 1)
 		assert.Equal(t, 8080, web.Ports[0].ContainerPort)
 		assert.True(t, web.IsExternal, "webfrontend should be external")
@@ -121,12 +121,12 @@ func Test_MapToRadius_ExampleAspireApp(t *testing.T) {
 		apiParam, ok := paramsByName["apiserviceImage"]
 		require.True(t, ok, "should have apiserviceImage param")
 		assert.Equal(t, "string", apiParam.Type)
-		assert.Equal(t, "apiservice:latest", apiParam.DefaultValue)
+		assert.Equal(t, "IMAGE_PLACEHOLDER", apiParam.DefaultValue)
 
 		webParam, ok := paramsByName["webfrontendImage"]
 		require.True(t, ok, "should have webfrontendImage param")
 		assert.Equal(t, "string", webParam.Type)
-		assert.Equal(t, "webfrontend:latest", webParam.DefaultValue)
+		assert.Equal(t, "IMAGE_PLACEHOLDER", webParam.DefaultValue)
 	})
 
 	t.Run("deterministic ordering", func(t *testing.T) {
@@ -148,42 +148,10 @@ func Test_MapToRadius_AppNameOverride(t *testing.T) {
 	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
 	require.NoError(t, err)
 
-	app, err := MapToRadius(descriptor, map[string]string{"app-name": "my-custom-app"})
+	app, err := MapToRadius(descriptor, "my-custom-app")
 	require.NoError(t, err)
 
 	assert.Equal(t, "my-custom-app", app.Name, "app name should use override")
-}
-
-func Test_MapToRadius_ImageNamespace(t *testing.T) {
-	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
-	require.NoError(t, err)
-
-	app, err := MapToRadius(descriptor, map[string]string{"image-namespace": "my-namespace"})
-	require.NoError(t, err)
-
-	containersByName := make(map[string]RadiusContainer)
-	for _, c := range app.Containers {
-		containersByName[c.Name] = c
-	}
-
-	// Image defaults should be prefixed with namespace
-	api := containersByName["apiservice"]
-	assert.Equal(t, "my-namespace/apiservice:latest", api.ImageDefault, "apiservice image should have namespace prefix")
-
-	web := containersByName["webfrontend"]
-	assert.Equal(t, "my-namespace/webfrontend:latest", web.ImageDefault, "webfrontend image should have namespace prefix")
-
-	// Image parameters should also reflect the namespace in their default values
-	paramsByName := make(map[string]RadiusParameter)
-	for _, p := range app.Parameters {
-		paramsByName[p.Name] = p
-	}
-
-	apiParam := paramsByName["apiserviceImage"]
-	assert.Equal(t, "my-namespace/apiservice:latest", apiParam.DefaultValue)
-
-	webParam := paramsByName["webfrontendImage"]
-	assert.Equal(t, "my-namespace/webfrontend:latest", webParam.DefaultValue)
 }
 
 func Test_deriveAppName(t *testing.T) {

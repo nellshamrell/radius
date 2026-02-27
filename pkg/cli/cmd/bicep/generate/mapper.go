@@ -27,14 +27,13 @@ import (
 // It classifies each ServiceTemplate as a service (http transport) or dependency
 // (redis=port 6379/tcp, sqlserver=port 1433/tcp) using heuristics, then maps
 // containers, dependencies, connections, and parameters.
-// The params map supports key=value pairs from the --parameter flag, including
-// "image-namespace" to prefix container image defaults and "app-name" to override
-// the application name.
-func MapToRadius(descriptor *AspireAppDescriptor, params map[string]string) (RadiusApplication, error) {
+// The appName parameter overrides the application name; pass "" to derive it
+// automatically from the Aspire project.
+func MapToRadius(descriptor *AspireAppDescriptor, appName string) (RadiusApplication, error) {
 	app := RadiusApplication{}
 
 	// Derive application name
-	app.Name = deriveAppName(descriptor, params["app-name"])
+	app.Name = deriveAppName(descriptor, appName)
 
 	// Classify templates into services vs. dependencies
 	var serviceTemplates []ServiceTemplate
@@ -50,7 +49,7 @@ func MapToRadius(descriptor *AspireAppDescriptor, params map[string]string) (Rad
 
 	// Map service templates to RadiusContainers
 	for _, st := range serviceTemplates {
-		container := mapContainer(st, params)
+		container := mapContainer(st)
 		app.Containers = append(app.Containers, container)
 
 		// Add image parameter
@@ -119,22 +118,13 @@ func classifyAsDependency(st ServiceTemplate) bool {
 
 // mapContainer maps a service ServiceTemplate to a RadiusContainer with image
 // parameter, ports from ingress, and environment variables from template containers.
-// When params["image-namespace"] is set, the ImageDefault is prefixed with the
-// namespace (e.g., "my-namespace/servicename:latest").
-func mapContainer(st ServiceTemplate, params map[string]string) RadiusContainer {
-	imageName := st.AzdServiceName
-	if imageName == "" {
-		imageName = st.ServiceName
-	}
-	imageDefault := imageName + ":latest"
-	if ns, ok := params["image-namespace"]; ok && ns != "" {
-		imageDefault = ns + "/" + imageName + ":latest"
-	}
-
+// The ImageDefault is always set to "IMAGE_PLACEHOLDER" — users must supply the
+// actual image reference at deploy time via parameter overrides.
+func mapContainer(st ServiceTemplate) RadiusContainer {
 	container := RadiusContainer{
 		Name:         st.ServiceName,
 		ImageParam:   st.ServiceName + "Image",
-		ImageDefault: imageDefault,
+		ImageDefault: "IMAGE_PLACEHOLDER",
 	}
 
 	// Extract ports from ingress

@@ -51,9 +51,6 @@ rad bicep generate --from-aspire ./infra --output ./deploy/app.bicep --report ./
 # Override application name
 rad bicep generate --from-aspire ./infra --app-name my-app
 
-# Prefix container images with a namespace
-rad bicep generate --from-aspire ./infra --parameter image-namespace=my-namespace
-
 # Quiet mode (suppress console report)
 rad bicep generate --from-aspire ./infra --quiet
 
@@ -70,7 +67,6 @@ rad bicep generate --from-aspire ./infra --deterministic
 	cmd.Flags().StringP("output", "o", "./app.bicep", "Path for the generated app.bicep output file")
 	cmd.Flags().String("app-name", "", "Name for the Radius application resource (derived from Aspire project if not set)")
 	cmd.Flags().String("report", "./mapping-report.md", "Path for the companion mapping report Markdown file")
-	cmd.Flags().StringSliceP("parameter", "p", nil, "Parameters as key=value pairs (e.g. --parameter image-namespace=my-namespace). Can be specified multiple times.")
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress console mapping report output (file still generated)")
 	cmd.Flags().Bool("deterministic", false, "Replace timestamps with a fixed sentinel value for idempotency verification in CI")
 
@@ -85,7 +81,6 @@ type Runner struct {
 	OutputPath     string
 	AppName        string
 	ReportPath     string
-	Parameters     map[string]string
 	Quiet          bool
 	Deterministic  bool
 }
@@ -135,21 +130,6 @@ func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Parse --parameter flag key=value pairs
-	paramSlice, err := cmd.Flags().GetStringSlice("parameter")
-	if err != nil {
-		return err
-	}
-
-	r.Parameters = make(map[string]string)
-	for _, p := range paramSlice {
-		parts := strings.SplitN(p, "=", 2)
-		if len(parts) != 2 || parts[0] == "" {
-			return clierrors.Message("Invalid --parameter value '%s'. Expected format: key=value (e.g. --parameter image-namespace=my-namespace).", p)
-		}
-		r.Parameters[parts[0]] = parts[1]
-	}
-
 	return nil
 }
 
@@ -164,15 +144,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Step 2: Map to Radius model
-	params := r.Parameters
-	if params == nil {
-		params = make(map[string]string)
-	}
-	if r.AppName != "" {
-		params["app-name"] = r.AppName
-	}
-
-	app, err := MapToRadius(descriptor, params)
+	app, err := MapToRadius(descriptor, r.AppName)
 	if err != nil {
 		return clierrors.Message("Failed to map Aspire resources to Radius model: %s", err)
 	}

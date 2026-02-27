@@ -29,7 +29,7 @@ func Test_GenerateAppBicep_GoldenFile(t *testing.T) {
 	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
 	require.NoError(t, err)
 
-	app, err := MapToRadius(descriptor, map[string]string{})
+	app, err := MapToRadius(descriptor, "")
 	require.NoError(t, err)
 
 	output, err := GenerateAppBicep(app, "./testdata/example-aspire-app", "DETERMINISTIC")
@@ -50,7 +50,7 @@ func Test_GenerateAppBicep_ValidStructure(t *testing.T) {
 			{
 				Name:         "web",
 				ImageParam:   "webImage",
-				ImageDefault: "web:latest",
+				ImageDefault: "IMAGE_PLACEHOLDER",
 				Ports: []RadiusPort{
 					{Name: "http", ContainerPort: 8080, Protocol: "TCP"},
 				},
@@ -72,7 +72,7 @@ func Test_GenerateAppBicep_ValidStructure(t *testing.T) {
 			{
 				Name:         "webImage",
 				Type:         "string",
-				DefaultValue: "web:latest",
+				DefaultValue: "IMAGE_PLACEHOLDER",
 				Description:  "Container image for web.",
 			},
 		},
@@ -100,14 +100,14 @@ func Test_GenerateAppBicep_Idempotent(t *testing.T) {
 			{
 				Name:         "svc",
 				ImageParam:   "svcImage",
-				ImageDefault: "svc:latest",
+				ImageDefault: "IMAGE_PLACEHOLDER",
 				Ports: []RadiusPort{
 					{Name: "http", ContainerPort: 3000, Protocol: "TCP"},
 				},
 			},
 		},
 		Parameters: []RadiusParameter{
-			{Name: "svcImage", Type: "string", DefaultValue: "svc:latest", Description: "Container image for svc."},
+			{Name: "svcImage", Type: "string", DefaultValue: "IMAGE_PLACEHOLDER", Description: "Container image for svc."},
 		},
 	}
 
