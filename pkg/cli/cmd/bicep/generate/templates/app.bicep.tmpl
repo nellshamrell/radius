@@ -14,7 +14,7 @@ param applicationName string = '{{ .App.Name }}'
 {{ end }}{{ if .IsSecure }}@secure()
 {{ end }}param {{ .Name }} {{ .Type }}{{ if .DefaultValue }} = '{{ .DefaultValue }}'{{ end }}
 {{ end }}
-resource app 'Radius.Core/applications@2025-08-01-preview' = {
+resource app 'Applications.Core/applications@2023-10-01-preview' = {
   name: applicationName
   properties: {
     environment: environment
@@ -42,7 +42,11 @@ resource {{ .Name }} 'Applications.Core/containers@2023-10-01-preview' = {
 {{- if .EnvVars }}
       env: {
 {{- range sortedEnvVars .EnvVars }}
-        {{ .Key }}: '{{ .Value }}'
+{{- if .Value.IsExpression }}
+        {{ .Key }}: { value: {{ .Value.Value }} }
+{{- else }}
+        {{ .Key }}: { value: '{{ .Value.Value }}' }
+{{- end }}
 {{- end }}
       }
 {{- end }}

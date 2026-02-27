@@ -62,7 +62,7 @@ func GenerateAppBicep(app RadiusApplication, sourceDir string, timestamp string)
 
 // sortedEnvVars returns environment variables as a sorted slice of key-value pairs
 // for deterministic template rendering.
-func sortedEnvVars(envVars map[string]string) []envVarPair {
+func sortedEnvVars(envVars map[string]RadiusEnvVar) []envVarPair {
 	keys := make([]string, 0, len(envVars))
 	for k := range envVars {
 		keys = append(keys, k)
@@ -79,5 +79,5 @@ func sortedEnvVars(envVars map[string]string) []envVarPair {
 // envVarPair represents a key-value pair for template rendering.
 type envVarPair struct {
 	Key   string
-	Value string
+	Value RadiusEnvVar
 }

@@ -83,7 +83,7 @@ func Test_GenerateAppBicep_ValidStructure(t *testing.T) {
 
 	// Verify structural elements
 	assert.Contains(t, output, "extension radius", "should contain extension radius")
-	assert.Contains(t, output, "Radius.Core/applications@2025-08-01-preview", "should contain application resource type")
+	assert.Contains(t, output, "Applications.Core/applications@2023-10-01-preview", "should contain application resource type")
 	assert.Contains(t, output, "Applications.Core/containers@2023-10-01-preview", "should contain container resource type")
 	assert.Contains(t, output, "Applications.Datastores/redisCaches@2023-10-01-preview", "should contain Redis resource type")
 	assert.Contains(t, output, "Applications.Datastores/sqlDatabases@2023-10-01-preview", "should contain SQL Database resource type")
@@ -140,15 +140,18 @@ func Test_GenerateAppBicep_PlaceholderDependency(t *testing.T) {
 }
 
 func Test_sortedEnvVars(t *testing.T) {
-	envVars := map[string]string{
-		"ZEBRA":  "z",
-		"ALPHA":  "a",
-		"MIDDLE": "m",
+	envVars := map[string]RadiusEnvVar{
+		"ZEBRA":  {Value: "z"},
+		"ALPHA":  {Value: "a"},
+		"MIDDLE": {Value: "m"},
 	}
 
 	sorted := sortedEnvVars(envVars)
 	require.Len(t, sorted, 3)
 	assert.Equal(t, "ALPHA", sorted[0].Key)
+	assert.Equal(t, "a", sorted[0].Value.Value)
 	assert.Equal(t, "MIDDLE", sorted[1].Key)
+	assert.Equal(t, "m", sorted[1].Value.Value)
 	assert.Equal(t, "ZEBRA", sorted[2].Key)
+	assert.Equal(t, "z", sorted[2].Value.Value)
 }

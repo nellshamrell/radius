@@ -176,7 +176,7 @@ type RadiusApplication struct {
 	Variables []RadiusVariable `json:"variables,omitempty"`
 }
 
-// RadiusContainer represents a Radius.Compute/containers resource.
+// RadiusContainer represents an Applications.Core/containers resource.
 type RadiusContainer struct {
 	// Name is the container resource name.
 	Name string `json:"name"`
@@ -186,14 +186,23 @@ type RadiusContainer struct {
 	ImageDefault string `json:"imageDefault"`
 	// Ports contains the port definitions.
 	Ports []RadiusPort `json:"ports"`
-	// EnvVars contains the environment variables.
-	EnvVars map[string]string `json:"envVars,omitempty"`
+	// EnvVars contains the environment variables (literal or Bicep expression).
+	EnvVars map[string]RadiusEnvVar `json:"envVars,omitempty"`
 	// Connections contains the connections to other resources.
 	Connections []RadiusConnection `json:"connections,omitempty"`
 	// IsExternal indicates whether this service has external ingress.
 	IsExternal bool `json:"isExternal,omitempty"`
 	// Command is the container command override.
 	Command []string `json:"command,omitempty"`
+}
+
+// RadiusEnvVar represents an environment variable value that can be either
+// a literal string (quoted in Bicep output) or a Bicep expression (unquoted).
+type RadiusEnvVar struct {
+	// Value is the literal string or Bicep expression.
+	Value string `json:"value"`
+	// IsExpression indicates whether Value is a Bicep expression (rendered unquoted).
+	IsExpression bool `json:"isExpression,omitempty"`
 }
 
 // RadiusPort represents a port definition on a container.

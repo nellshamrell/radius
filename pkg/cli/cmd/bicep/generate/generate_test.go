@@ -116,7 +116,7 @@ func Test_Run_ExampleAspireApp(t *testing.T) {
 
 	bicepOutput := string(content)
 	assert.Contains(t, bicepOutput, "extension radius")
-	assert.Contains(t, bicepOutput, "Radius.Core/applications@2025-08-01-preview")
+	assert.Contains(t, bicepOutput, "Applications.Core/applications@2023-10-01-preview")
 	assert.Contains(t, bicepOutput, "resource apiservice")
 	assert.Contains(t, bicepOutput, "resource webfrontend")
 	assert.Contains(t, bicepOutput, "resource cache")

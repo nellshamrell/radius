@@ -73,6 +73,10 @@ func MapToRadius(descriptor *AspireAppDescriptor, params map[string]string) (Rad
 	// and services__ prefix in env vars)
 	mapConnections(&app, descriptor.ServiceTemplates)
 
+	// Transform env vars: filter Azure-specific vars, replace dependency-related
+	// vars with Bicep resource expressions, rewrite service URLs, and fix HTTP_PORTS.
+	transformEnvVars(&app, descriptor.ServiceTemplates)
+
 	// Sort for determinism
 	sort.Slice(app.Containers, func(i, j int) bool {
 		return app.Containers[i].Name < app.Containers[j].Name
@@ -118,9 +122,13 @@ func classifyAsDependency(st ServiceTemplate) bool {
 // When params["image-namespace"] is set, the ImageDefault is prefixed with the
 // namespace (e.g., "my-namespace/servicename:latest").
 func mapContainer(st ServiceTemplate, params map[string]string) RadiusContainer {
-	imageDefault := st.ServiceName + ":latest"
+	imageName := st.AzdServiceName
+	if imageName == "" {
+		imageName = st.ServiceName
+	}
+	imageDefault := imageName + ":latest"
 	if ns, ok := params["image-namespace"]; ok && ns != "" {
-		imageDefault = ns + "/" + st.ServiceName + ":latest"
+		imageDefault = ns + "/" + imageName + ":latest"
 	}
 
 	container := RadiusContainer{
@@ -147,12 +155,12 @@ func mapContainer(st ServiceTemplate, params map[string]string) RadiusContainer 
 
 	// Extract env vars from first container definition
 	if len(st.Containers) > 0 {
-		envMap := make(map[string]string)
+		envMap := make(map[string]RadiusEnvVar)
 		for _, env := range st.Containers[0].Env {
 			if env.Value != "" {
-				envMap[env.Name] = env.Value
+				envMap[env.Name] = RadiusEnvVar{Value: env.Value}
 			} else if env.SecretRef != "" {
-				envMap[env.Name] = fmt.Sprintf("{{secret:%s}}", env.SecretRef)
+				envMap[env.Name] = RadiusEnvVar{Value: fmt.Sprintf("{{secret:%s}}", env.SecretRef)}
 			}
 		}
 		if len(envMap) > 0 {
@@ -286,6 +294,210 @@ func mapConnections(app *RadiusApplication, serviceTemplates []ServiceTemplate) 
 			return c.Connections[a].Name < c.Connections[b].Name
 		})
 	}
+}
+
+// transformEnvVars post-processes container environment variables to produce Bicep-native
+// resource expressions. It filters Azure-specific vars, converts dependency-related vars
+// (host, port, password, etc.) to Bicep property references, rewrites service discovery
+// URLs, and fixes HTTP_PORTS to use the actual ingress port.
+func transformEnvVars(app *RadiusApplication, serviceTemplates []ServiceTemplate) {
+	// Build dependency lookup: name → RadiusDependency
+	depByName := make(map[string]*RadiusDependency)
+	for i := range app.Dependencies {
+		depByName[app.Dependencies[i].Name] = &app.Dependencies[i]
+	}
+
+	// Build container port lookup: name → first port number
+	containerPorts := make(map[string]int)
+	for _, c := range app.Containers {
+		if len(c.Ports) > 0 {
+			containerPorts[c.Name] = c.Ports[0].ContainerPort
+		}
+	}
+
+	// Build ServiceTemplate lookup by service name
+	stByName := make(map[string]ServiceTemplate)
+	for _, st := range serviceTemplates {
+		stByName[st.ServiceName] = st
+	}
+
+	// Define property mappings per dependency type
+	type propMapping struct {
+		suffix string
+		expr   func(depName string) string
+	}
+	sqlMappings := []propMapping{
+		{"_HOST", func(d string) string { return d + ".properties.server" }},
+		{"_PORT", func(d string) string { return "string(" + d + ".properties.port)" }},
+		{"_PASSWORD", func(d string) string { return d + ".listSecrets().password" }},
+		{"_USERNAME", func(d string) string { return d + ".properties.username" }},
+		{"_DATABASENAME", func(d string) string { return d + ".properties.database" }},
+	}
+	redisMappings := []propMapping{
+		{"_HOST", func(d string) string { return d + ".properties.host" }},
+		{"_PORT", func(d string) string { return "string(" + d + ".properties.port)" }},
+	}
+
+	for i := range app.Containers {
+		c := &app.Containers[i]
+		if c.EnvVars == nil {
+			continue
+		}
+
+		st := stByName[c.Name]
+
+		// Build secretRef lookup from original ServiceTemplate
+		secretRefVars := make(map[string]string) // envName → secretRef name
+		if len(st.Containers) > 0 {
+			for _, env := range st.Containers[0].Env {
+				if env.SecretRef != "" {
+					secretRefVars[env.Name] = env.SecretRef
+				}
+			}
+		}
+
+		// Build prefix → dependency association by matching X_HOST values to dep names
+		prefixToDep := make(map[string]*RadiusDependency)
+		for envName, envVar := range c.EnvVars {
+			if strings.HasSuffix(envName, "_HOST") {
+				prefix := strings.TrimSuffix(envName, "_HOST")
+				depName := strings.ToLower(envVar.Value)
+				if dep, ok := depByName[depName]; ok {
+					prefixToDep[prefix] = dep
+				}
+			}
+		}
+
+		// Get this container's ingress port for HTTP_PORTS fix
+		containerPort := 0
+		if len(c.Ports) > 0 {
+			containerPort = c.Ports[0].ContainerPort
+		}
+
+		newEnvVars := make(map[string]RadiusEnvVar)
+		for envName, envVar := range c.EnvVars {
+			// Filter: skip env vars with empty values
+			if envVar.Value == "" {
+				continue
+			}
+
+			// Filter: skip Azure-specific env vars
+			if strings.HasPrefix(envName, "AZURE_") {
+				continue
+			}
+
+			// Transform: ConnectionStrings__X → dependency.listSecrets().connectionString
+			if strings.HasPrefix(envName, "ConnectionStrings__") {
+				targetName := strings.TrimPrefix(envName, "ConnectionStrings__")
+				resolvedDep := resolveDependencyFromTarget(strings.ToLower(targetName), depByName)
+				if resolvedDep != nil {
+					newEnvVars[envName] = RadiusEnvVar{
+						Value:        resolvedDep.Name + ".listSecrets().connectionString",
+						IsExpression: true,
+					}
+					continue
+				}
+			}
+
+			// Transform: HTTP_PORTS with value "0" → use actual container port
+			if envName == "HTTP_PORTS" && envVar.Value == "0" && containerPort > 0 {
+				newEnvVars[envName] = RadiusEnvVar{Value: fmt.Sprintf("%d", containerPort)}
+				continue
+			}
+
+			// Transform: services__X__proto__N → rewritten URL with container port
+			// (must come before .internal. filter since original values contain ACA domains)
+			if strings.HasPrefix(envName, "services__") {
+				parts := strings.SplitN(envName, "__", 4)
+				if len(parts) >= 3 {
+					targetName := parts[1]
+					proto := parts[2]
+					if port, ok := containerPorts[targetName]; ok {
+						newEnvVars[envName] = RadiusEnvVar{
+							Value: fmt.Sprintf("%s://%s:%d", proto, targetName, port),
+						}
+						continue
+					}
+				}
+			}
+
+			// Filter: skip values containing ".internal." (Azure Container Apps domain)
+			if strings.Contains(envVar.Value, ".internal.") {
+				continue
+			}
+
+			// Filter: skip URI/connection string patterns (contain "://")
+			if strings.Contains(envVar.Value, "://") {
+				continue
+			}
+
+			// Filter: skip JDBC connection strings
+			if strings.HasSuffix(envName, "_JDBCCONNECTIONSTRING") {
+				continue
+			}
+
+			// Transform: dependency-related env vars → Bicep expressions
+			transformed := false
+			for prefix, dep := range prefixToDep {
+				var mappings []propMapping
+				if strings.Contains(dep.Type, "sqlDatabases") {
+					mappings = sqlMappings
+				} else if strings.Contains(dep.Type, "redisCaches") {
+					mappings = redisMappings
+				}
+
+				for _, m := range mappings {
+					if envName == prefix+m.suffix {
+						newEnvVars[envName] = RadiusEnvVar{
+							Value:        m.expr(dep.Name),
+							IsExpression: true,
+						}
+						transformed = true
+						break
+					}
+				}
+				if transformed {
+					break
+				}
+			}
+			if transformed {
+				continue
+			}
+
+			// Filter: skip remaining secret-backed vars that weren't transformed above
+			// (e.g., X_PASSWORD for Redis, X_URI secrets)
+			if _, isSecret := secretRefVars[envName]; isSecret {
+				continue
+			}
+
+			// Keep as literal value
+			newEnvVars[envName] = envVar
+		}
+
+		c.EnvVars = newEnvVars
+	}
+}
+
+// resolveDependencyFromTarget finds a dependency matching the target name,
+// supporting both direct matches and heuristic matching (e.g., "weatherdb" → sqlserver).
+func resolveDependencyFromTarget(targetName string, depByName map[string]*RadiusDependency) *RadiusDependency {
+	// Direct match
+	if dep, ok := depByName[targetName]; ok {
+		return dep
+	}
+
+	// Heuristic: targets containing "db" or "database" → match SQL-like deps
+	if strings.Contains(targetName, "db") || strings.Contains(targetName, "database") {
+		for _, dep := range depByName {
+			if strings.Contains(strings.ToLower(dep.Name), "sqlserver") ||
+				strings.Contains(strings.ToLower(dep.Name), "mssql") ||
+				strings.Contains(strings.ToLower(dep.Name), "mysql") {
+				return dep
+			}
+		}
+	}
+
+	return nil
 }
 
 // resolveConnectionTarget attempts to match a connection string target name
