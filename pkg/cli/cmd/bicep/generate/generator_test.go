@@ -25,21 +25,14 @@ import (
 )
 
 func Test_GenerateAppBicep_GoldenFile(t *testing.T) {
-	// Parse → Map → Generate pipeline
-	filePaths, err := ScanDirectory("./testdata/aspire-starter")
+	// Parse → Map → Generate pipeline using example-aspire-app fixtures
+	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
 	require.NoError(t, err)
 
-	var parsedFiles []BicepFile
-	for _, fp := range filePaths {
-		bf, err := ParseFile(fp)
-		require.NoError(t, err)
-		parsedFiles = append(parsedFiles, bf)
-	}
-
-	app, err := MapToRadius(parsedFiles, "", "./testdata/aspire-starter")
+	app, err := MapToRadius(descriptor, map[string]string{})
 	require.NoError(t, err)
 
-	output, err := GenerateAppBicep(app, "./testdata/aspire-starter", "DETERMINISTIC")
+	output, err := GenerateAppBicep(app, "./testdata/example-aspire-app", "DETERMINISTIC")
 	require.NoError(t, err)
 
 	// Compare with golden file
@@ -69,6 +62,11 @@ func Test_GenerateAppBicep_ValidStructure(t *testing.T) {
 				Type:           "Applications.Datastores/redisCaches",
 				IsRecipeBacked: true,
 			},
+			{
+				Name:           "sqlserver",
+				Type:           "Applications.Datastores/sqlDatabases",
+				IsRecipeBacked: true,
+			},
 		},
 		Parameters: []RadiusParameter{
 			{
@@ -86,8 +84,9 @@ func Test_GenerateAppBicep_ValidStructure(t *testing.T) {
 	// Verify structural elements
 	assert.Contains(t, output, "extension radius", "should contain extension radius")
 	assert.Contains(t, output, "Radius.Core/applications@2025-08-01-preview", "should contain application resource type")
-	assert.Contains(t, output, "Radius.Compute/containers@2025-08-01-preview", "should contain container resource type")
+	assert.Contains(t, output, "Applications.Core/containers@2023-10-01-preview", "should contain container resource type")
 	assert.Contains(t, output, "Applications.Datastores/redisCaches@2023-10-01-preview", "should contain Redis resource type")
+	assert.Contains(t, output, "Applications.Datastores/sqlDatabases@2023-10-01-preview", "should contain SQL Database resource type")
 	assert.Contains(t, output, "param environment string", "should contain environment param")
 	assert.Contains(t, output, "param applicationName string = 'test-app'", "should contain applicationName param")
 	assert.Contains(t, output, "containerPort: 8080", "should contain port")
@@ -128,7 +127,7 @@ func Test_GenerateAppBicep_PlaceholderDependency(t *testing.T) {
 			{
 				Name:               "unsupported",
 				IsPlaceholder:      true,
-				PlaceholderComment: "PLACEHOLDER: Azure resource type 'Microsoft.Storage/storageAccounts@2023-01-01' has no Portable Resource equivalent — manual configuration required",
+				PlaceholderComment: "PLACEHOLDER: Azure resource type has no Portable Resource equivalent — manual configuration required",
 			},
 		},
 	}
@@ -142,9 +141,9 @@ func Test_GenerateAppBicep_PlaceholderDependency(t *testing.T) {
 
 func Test_sortedEnvVars(t *testing.T) {
 	envVars := map[string]string{
-		"ZEBRA":    "z",
-		"ALPHA":    "a",
-		"MIDDLE":   "m",
+		"ZEBRA":  "z",
+		"ALPHA":  "a",
+		"MIDDLE": "m",
 	}
 
 	sorted := sortedEnvVars(envVars)

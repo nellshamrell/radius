@@ -51,6 +51,9 @@ rad bicep generate --from-aspire ./infra --output ./deploy/app.bicep --report ./
 # Override application name
 rad bicep generate --from-aspire ./infra --app-name my-app
 
+# Prefix container images with a namespace
+rad bicep generate --from-aspire ./infra --parameter image-namespace=my-namespace
+
 # Quiet mode (suppress console report)
 rad bicep generate --from-aspire ./infra --quiet
 
@@ -67,6 +70,7 @@ rad bicep generate --from-aspire ./infra --deterministic
 	cmd.Flags().StringP("output", "o", "./app.bicep", "Path for the generated app.bicep output file")
 	cmd.Flags().String("app-name", "", "Name for the Radius application resource (derived from Aspire project if not set)")
 	cmd.Flags().String("report", "./mapping-report.md", "Path for the companion mapping report Markdown file")
+	cmd.Flags().StringSliceP("parameter", "p", nil, "Parameters as key=value pairs (e.g. --parameter image-namespace=my-namespace). Can be specified multiple times.")
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress console mapping report output (file still generated)")
 	cmd.Flags().Bool("deterministic", false, "Replace timestamps with a fixed sentinel value for idempotency verification in CI")
 
@@ -81,6 +85,7 @@ type Runner struct {
 	OutputPath     string
 	AppName        string
 	ReportPath     string
+	Parameters     map[string]string
 	Quiet          bool
 	Deterministic  bool
 }
@@ -130,36 +135,44 @@ func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Parse --parameter flag key=value pairs
+	paramSlice, err := cmd.Flags().GetStringSlice("parameter")
+	if err != nil {
+		return err
+	}
+
+	r.Parameters = make(map[string]string)
+	for _, p := range paramSlice {
+		parts := strings.SplitN(p, "=", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return clierrors.Message("Invalid --parameter value '%s'. Expected format: key=value (e.g. --parameter image-namespace=my-namespace).", p)
+		}
+		r.Parameters[parts[0]] = parts[1]
+	}
+
 	return nil
 }
 
 // Run runs the rad bicep generate command.
 func (r *Runner) Run(ctx context.Context) error {
-	// Step 1: Discover Bicep files
+	// Step 1: Discover and parse Aspire artifacts
 	r.Output.LogInfo("Converting Aspire artifacts from: %s", r.FromAspirePath)
 
-	filePaths, err := ScanDirectory(r.FromAspirePath)
+	descriptor, err := ScanDirectory(r.FromAspirePath)
 	if err != nil {
 		return clierrors.Message("Failed to scan directory: %s", err)
 	}
 
-	// Step 2: Parse each discovered file
-	var parsedFiles []BicepFile
-	for _, fp := range filePaths {
-		bf, err := ParseFile(fp)
-		if err != nil {
-			return clierrors.Message("Failed to parse '%s': %s", fp, err)
-		}
-		parsedFiles = append(parsedFiles, bf)
+	// Step 2: Map to Radius model
+	params := r.Parameters
+	if params == nil {
+		params = make(map[string]string)
+	}
+	if r.AppName != "" {
+		params["app-name"] = r.AppName
 	}
 
-	// Step 3: Map to Radius model
-	absSourceDir, err := filepath.Abs(r.FromAspirePath)
-	if err != nil {
-		absSourceDir = r.FromAspirePath
-	}
-
-	app, err := MapToRadius(parsedFiles, r.AppName, absSourceDir)
+	app, err := MapToRadius(descriptor, params)
 	if err != nil {
 		return clierrors.Message("Failed to map Aspire resources to Radius model: %s", err)
 	}
@@ -176,14 +189,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		if d.IsPlaceholder {
 			depDescs = append(depDescs, fmt.Sprintf("%s (unsupported)", d.Name))
 		} else {
-			depDescs = append(depDescs, fmt.Sprintf("%s (Redis)", d.Name))
+			depDescs = append(depDescs, fmt.Sprintf("%s (%s)", d.Name, d.Type))
 		}
 	}
 	if len(depDescs) > 0 {
-		r.Output.LogInfo("  Found %d dependency: %s", len(app.Dependencies), strings.Join(depDescs, ", "))
+		r.Output.LogInfo("  Found %d dependencies: %s", len(app.Dependencies), strings.Join(depDescs, ", "))
 	}
 
-	// Step 4: Generate app.bicep output
+	// Step 3: Generate app.bicep output
 	r.Output.LogInfo("")
 	r.Output.LogInfo("Generating app.bicep...")
 
@@ -197,7 +210,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return clierrors.Message("Failed to generate app.bicep: %s", err)
 	}
 
-	// Step 5: Write output file
+	// Step 4: Write output file
 	outputDir := filepath.Dir(r.OutputPath)
 	if outputDir != "" && outputDir != "." {
 		if err := os.MkdirAll(outputDir, 0755); err != nil {

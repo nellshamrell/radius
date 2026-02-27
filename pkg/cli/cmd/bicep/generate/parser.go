@@ -17,380 +17,412 @@ limitations under the License.
 package generate
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
+"fmt"
+"os"
+"path/filepath"
+"regexp"
+"strconv"
+"strings"
+
+"gopkg.in/yaml.v3"
 )
 
-// ScanDirectory discovers all .bicep files in the given directory in lexicographic path order.
-func ScanDirectory(dirPath string) ([]string, error) {
-	info, err := os.Stat(dirPath)
-	if err != nil {
-		return nil, fmt.Errorf("cannot access directory '%s': %w", dirPath, err)
-	}
-
-	if !info.IsDir() {
-		return nil, fmt.Errorf("'%s' is not a directory", dirPath)
-	}
-
-	var files []string
-	err = filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".bicep") {
-			files = append(files, path)
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("error scanning directory '%s': %w", dirPath, err)
-	}
-
-	return files, nil
+// ScanDirectory discovers the AppHost infra/ directory containing .tmpl.yaml files
+// and the solution-level infra/main.bicep. It returns an AspireAppDescriptor with
+// the discovered paths but does not parse files (callers should use ParseYAMLTemplate
+// and ParseBicepFile for parsing).
+func ScanDirectory(dirPath string) (*AspireAppDescriptor, error) {
+absPath, err := filepath.Abs(dirPath)
+if err != nil {
+return nil, fmt.Errorf("cannot resolve path '%s': %w", dirPath, err)
 }
 
-// ParseFile reads a Bicep file and extracts declarations (resources, parameters, modules, variables).
-func ParseFile(filePath string) (BicepFile, error) {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return BicepFile{}, fmt.Errorf("cannot read file '%s': %w", filePath, err)
-	}
-
-	text := string(content)
-	bf := BicepFile{
-		Path: filePath,
-	}
-
-	bf.Resources = parseBicepResources(text, filePath)
-	bf.Parameters = parseBicepParameters(text, filePath)
-	bf.Modules = parseBicepModules(text)
-	bf.Variables = parseBicepVariables(text)
-
-	return bf, nil
+info, err := os.Stat(absPath)
+if err != nil {
+return nil, fmt.Errorf("cannot access directory '%s': %w", dirPath, err)
 }
 
-// --- Resource Parsing ---
-
-var resourceDeclRegex = regexp.MustCompile(`(?m)^resource\s+(\w+)\s+'([^']+)'\s*=\s*\{`)
-
-// parseBicepResources extracts all resource declarations from Bicep text.
-func parseBicepResources(text string, sourceFile string) []BicepResource {
-	var resources []BicepResource
-	matches := resourceDeclRegex.FindAllStringSubmatchIndex(text, -1)
-
-	for _, loc := range matches {
-		symbolicName := text[loc[2]:loc[3]]
-		resourceType := text[loc[4]:loc[5]]
-		startLine := countLines(text[:loc[0]])
-
-		// Find the matching closing brace for the resource body
-		bodyStart := loc[1] - 1 // position of the opening brace
-		bodyEnd := findMatchingBrace(text, bodyStart)
-		if bodyEnd < 0 {
-			continue
-		}
-
-		body := text[bodyStart : bodyEnd+1]
-		props := extractResourceProperties(body)
-
-		// Extract the name expression
-		nameExpr := extractSimpleProperty(body, "name")
-
-		resources = append(resources, BicepResource{
-			SymbolicName: symbolicName,
-			Type:         resourceType,
-			Name:         nameExpr,
-			Properties:   props,
-			SourceFile:   sourceFile,
-			StartLine:    startLine,
-		})
-	}
-
-	return resources
+if !info.IsDir() {
+return nil, fmt.Errorf("'%s' is not a directory", dirPath)
 }
 
-// extractResourceProperties extracts nested properties from a resource body into a map.
-func extractResourceProperties(body string) map[string]any {
-	props := make(map[string]any)
-
-	// Extract ingress block
-	if ingress := extractBlock(body, "ingress"); ingress != "" {
-		ingressProps := make(map[string]any)
-
-		if tp := extractSimpleValue(ingress, "targetPort"); tp != "" {
-			if port, err := strconv.Atoi(tp); err == nil {
-				ingressProps["targetPort"] = port
-			}
-		}
-
-		if ext := extractSimpleValue(ingress, "external"); ext != "" {
-			ingressProps["external"] = ext == "true"
-		}
-
-		if transport := extractSimpleValue(ingress, "transport"); transport != "" {
-			ingressProps["transport"] = strings.Trim(transport, "'\"")
-		}
-
-		if len(ingressProps) > 0 {
-			props["ingress"] = ingressProps
-		}
-	}
-
-	// Extract template.containers array
-	if containers := extractContainers(body); len(containers) > 0 {
-		props["containers"] = containers
-	}
-
-	// Extract secrets
-	if secrets := extractSecrets(body); len(secrets) > 0 {
-		props["secrets"] = secrets
-	}
-
-	return props
+descriptor := &AspireAppDescriptor{
+RootDir: absPath,
 }
 
-// extractContainers extracts the containers array from a template block.
-func extractContainers(body string) []map[string]any {
-	// Find the containers array inside template
-	templateBlock := extractBlock(body, "template")
-	if templateBlock == "" {
-		// Try to find containers directly in the body
-		templateBlock = body
-	}
-
-	containersStart := strings.Index(templateBlock, "containers:")
-	if containersStart < 0 {
-		return nil
-	}
-
-	// Find the opening bracket
-	bracketStart := strings.Index(templateBlock[containersStart:], "[")
-	if bracketStart < 0 {
-		return nil
-	}
-	bracketStart += containersStart
-
-	bracketEnd := findMatchingBracket(templateBlock, bracketStart)
-	if bracketEnd < 0 {
-		return nil
-	}
-
-	containersContent := templateBlock[bracketStart+1 : bracketEnd]
-
-	// Extract individual container objects
-	var containers []map[string]any
-	pos := 0
-	for pos < len(containersContent) {
-		braceStart := strings.Index(containersContent[pos:], "{")
-		if braceStart < 0 {
-			break
-		}
-		braceStart += pos
-
-		braceEnd := findMatchingBrace(containersContent, braceStart)
-		if braceEnd < 0 {
-			break
-		}
-
-		containerBody := containersContent[braceStart : braceEnd+1]
-		container := make(map[string]any)
-
-		if name := extractSimpleValue(containerBody, "name"); name != "" {
-			container["name"] = strings.Trim(name, "'\"")
-		}
-
-		if image := extractSimpleValue(containerBody, "image"); image != "" {
-			container["image"] = strings.Trim(image, "'\"")
-		}
-
-		// Extract env array
-		if envVars := extractEnvVars(containerBody); len(envVars) > 0 {
-			container["env"] = envVars
-		}
-
-		containers = append(containers, container)
-		pos = braceEnd + 1
-	}
-
-	return containers
+// Discover AppHost infra/ directories containing .tmpl.yaml files
+appHostInfraDirs, err := findAppHostInfraDirs(absPath)
+if err != nil {
+return nil, err
 }
 
-// extractEnvVars extracts env variables from a container body.
-func extractEnvVars(containerBody string) []map[string]string {
-	envStart := strings.Index(containerBody, "env:")
-	if envStart < 0 {
-		return nil
-	}
-
-	bracketStart := strings.Index(containerBody[envStart:], "[")
-	if bracketStart < 0 {
-		return nil
-	}
-	bracketStart += envStart
-
-	bracketEnd := findMatchingBracket(containerBody, bracketStart)
-	if bracketEnd < 0 {
-		return nil
-	}
-
-	envContent := containerBody[bracketStart+1 : bracketEnd]
-
-	var envVars []map[string]string
-	pos := 0
-	for pos < len(envContent) {
-		braceStart := strings.Index(envContent[pos:], "{")
-		if braceStart < 0 {
-			break
-		}
-		braceStart += pos
-
-		braceEnd := findMatchingBrace(envContent, braceStart)
-		if braceEnd < 0 {
-			break
-		}
-
-		envBody := envContent[braceStart : braceEnd+1]
-		envVar := make(map[string]string)
-
-		if name := extractSimpleValue(envBody, "name"); name != "" {
-			envVar["name"] = strings.Trim(name, "'\"")
-		}
-
-		if value := extractSimpleValue(envBody, "value"); value != "" {
-			envVar["value"] = strings.Trim(value, "'\"")
-		}
-
-		if secretRef := extractSimpleValue(envBody, "secretRef"); secretRef != "" {
-			envVar["secretRef"] = strings.Trim(secretRef, "'\"")
-		}
-
-		if len(envVar) > 0 {
-			envVars = append(envVars, envVar)
-		}
-
-		pos = braceEnd + 1
-	}
-
-	return envVars
+if len(appHostInfraDirs) == 0 {
+return nil, fmt.Errorf("Input directory '%s' does not contain Aspire infrastructure artifacts.\nExpected: An Aspire application directory with <AppHost>/infra/*.tmpl.yaml files.\nRun 'azd infra synth' in your Aspire project to generate the required artifacts.", dirPath)
 }
 
-// extractSecrets extracts the secrets array from a configuration block.
-func extractSecrets(body string) []map[string]string {
-	secretsStart := strings.Index(body, "secrets:")
-	if secretsStart < 0 {
-		return nil
-	}
+if len(appHostInfraDirs) > 1 {
+return nil, fmt.Errorf("Multiple Aspire projects detected in '%s'.\nThis PoC supports a single Aspire project only. Please provide a directory with one main.bicep file.", dirPath)
+}
 
-	bracketStart := strings.Index(body[secretsStart:], "[")
-	if bracketStart < 0 {
-		return nil
-	}
-	bracketStart += secretsStart
+descriptor.AppHostDir = filepath.Dir(appHostInfraDirs[0])
 
-	bracketEnd := findMatchingBracket(body, bracketStart)
-	if bracketEnd < 0 {
-		return nil
-	}
+// Parse all .tmpl.yaml files in the AppHost infra/ directory (lexicographic order)
+tmplFiles, err := findTmplYAMLFiles(appHostInfraDirs[0])
+if err != nil {
+return nil, fmt.Errorf("error scanning AppHost infra directory: %w", err)
+}
 
-	secretsContent := body[bracketStart+1 : bracketEnd]
+for _, tmplPath := range tmplFiles {
+st, err := ParseYAMLTemplate(tmplPath)
+if err != nil {
+return nil, fmt.Errorf("failed to parse YAML template '%s': %w", tmplPath, err)
+}
+descriptor.ServiceTemplates = append(descriptor.ServiceTemplates, st)
+}
 
-	var secrets []map[string]string
-	pos := 0
-	for pos < len(secretsContent) {
-		braceStart := strings.Index(secretsContent[pos:], "{")
-		if braceStart < 0 {
-			break
-		}
-		braceStart += pos
+// Discover and parse solution-level infra/main.bicep
+mainBicepPath := filepath.Join(absPath, "infra", "main.bicep")
+if _, err := os.Stat(mainBicepPath); err == nil {
+bf, err := ParseBicepFile(mainBicepPath)
+if err != nil {
+return nil, fmt.Errorf("failed to parse main.bicep: %w", err)
+}
+descriptor.MainBicep = &bf
+}
 
-		braceEnd := findMatchingBrace(secretsContent, braceStart)
-		if braceEnd < 0 {
-			break
-		}
+// Parse main.parameters.json if it exists
+paramsPath := filepath.Join(absPath, "infra", "main.parameters.json")
+if _, err := os.Stat(paramsPath); err == nil {
+paramsData, readErr := os.ReadFile(paramsPath)
+if readErr == nil {
+var params map[string]any
+if jsonErr := yaml.Unmarshal(paramsData, &params); jsonErr == nil {
+descriptor.ParametersJSON = params
+}
+}
+}
 
-		secretBody := secretsContent[braceStart : braceEnd+1]
-		secret := make(map[string]string)
+return descriptor, nil
+}
 
-		if name := extractSimpleValue(secretBody, "name"); name != "" {
-			secret["name"] = strings.Trim(name, "'\"")
-		}
+// findAppHostInfraDirs scans for directories that contain infra/ subdirectories with .tmpl.yaml files.
+// It walks the root looking for patterns like <AppHost>/infra/*.tmpl.yaml.
+func findAppHostInfraDirs(rootDir string) ([]string, error) {
+var infraDirs []string
 
-		if value := extractSimpleValue(secretBody, "value"); value != "" {
-			secret["value"] = strings.Trim(value, "'\"")
-		}
+entries, err := os.ReadDir(rootDir)
+if err != nil {
+return nil, fmt.Errorf("cannot read directory '%s': %w", rootDir, err)
+}
 
-		if len(secret) > 0 {
-			secrets = append(secrets, secret)
-		}
+for _, entry := range entries {
+if !entry.IsDir() {
+continue
+}
 
-		pos = braceEnd + 1
-	}
+// Skip known non-AppHost directories
+name := entry.Name()
+if name == "infra" || name == ".git" || name == ".azure" || name == ".aspire" || name == "node_modules" {
+continue
+}
 
-	return secrets
+infraPath := filepath.Join(rootDir, name, "infra")
+if info, statErr := os.Stat(infraPath); statErr == nil && info.IsDir() {
+// Check if this infra/ directory has .tmpl.yaml files
+tmplFiles, findErr := findTmplYAMLFiles(infraPath)
+if findErr == nil && len(tmplFiles) > 0 {
+infraDirs = append(infraDirs, infraPath)
+}
+}
+}
+
+return infraDirs, nil
+}
+
+// findTmplYAMLFiles finds all .tmpl.yaml files in a directory in lexicographic order.
+func findTmplYAMLFiles(dirPath string) ([]string, error) {
+var files []string
+
+err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+if err != nil {
+return err
+}
+
+if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".tmpl.yaml") {
+files = append(files, path)
+}
+
+return nil
+})
+
+if err != nil {
+return nil, err
+}
+
+return files, nil
+}
+
+// --- Go template expression handling ---
+
+var (
+// Matches {{ .Image }}
+imageExprRegex = regexp.MustCompile(`\{\{\s*\.Image\s*\}\}`)
+// Matches {{ .Env.NAME }}
+envExprRegex = regexp.MustCompile(`\{\{\s*\.Env\.\w+\s*\}\}`)
+// Matches {{ securedParameter "name" }}
+securedParamRegex = regexp.MustCompile(`\{\{\s*securedParameter\s+"([^"]+)"\s*\}\}`)
+// Matches {{ targetPortOrDefault N }}
+targetPortRegex = regexp.MustCompile(`\{\{\s*targetPortOrDefault\s+(\d+)\s*\}\}`)
+// Matches {{ uriEncode (...) }} — can be nested
+uriEncodeRegex = regexp.MustCompile(`\{\{\s*uriEncode\s+\([^)]*\)\s*\}\}`)
+// Catch-all for any remaining {{ ... }} expressions
+genericTemplateRegex = regexp.MustCompile(`\{\{[^}]*\}\}`)
+)
+
+// stripGoTemplateExpressions replaces Go template expressions with YAML-safe values
+// so the YAML can be parsed.
+func stripGoTemplateExpressions(content string) string {
+// Replace {{ .Image }} with a placeholder
+result := imageExprRegex.ReplaceAllString(content, "IMAGE_PLACEHOLDER")
+
+// Replace {{ targetPortOrDefault N }} with the default value N
+result = targetPortRegex.ReplaceAllStringFunc(result, func(match string) string {
+submatch := targetPortRegex.FindStringSubmatch(match)
+if len(submatch) > 1 {
+return submatch[1]
+}
+return "0"
+})
+
+// Replace {{ securedParameter "name" }} with SECURED_PARAM_name
+result = securedParamRegex.ReplaceAllStringFunc(result, func(match string) string {
+submatch := securedParamRegex.FindStringSubmatch(match)
+if len(submatch) > 1 {
+return "SECURED_PARAM_" + submatch[1]
+}
+return "SECURED_PARAM"
+})
+
+// Replace {{ uriEncode (...) }} with empty string
+result = uriEncodeRegex.ReplaceAllString(result, "")
+
+// Replace {{ .Env.* }} with empty string
+result = envExprRegex.ReplaceAllString(result, "")
+
+// Replace any remaining {{ ... }} with empty string
+result = genericTemplateRegex.ReplaceAllString(result, "")
+
+return result
+}
+
+// --- YAML Template Parsing ---
+
+// yamlTemplateDoc represents the top-level structure of a .tmpl.yaml file.
+type yamlTemplateDoc struct {
+APIVersion string                 `yaml:"api-version"`
+Location   string                 `yaml:"location"`
+Properties yamlProperties         `yaml:"properties"`
+Tags       map[string]string      `yaml:"tags"`
+Identity   map[string]interface{} `yaml:"identity"`
+}
+
+type yamlProperties struct {
+EnvironmentID string            `yaml:"environmentId"`
+Configuration yamlConfiguration `yaml:"configuration"`
+Template      yamlTemplate      `yaml:"template"`
+}
+
+type yamlConfiguration struct {
+ActiveRevisionsMode string        `yaml:"activeRevisionsMode"`
+Ingress             *yamlIngress  `yaml:"ingress"`
+Secrets             []yamlSecret  `yaml:"secrets"`
+Registries          []interface{} `yaml:"registries"`
+Runtime             interface{}   `yaml:"runtime"`
+}
+
+type yamlIngress struct {
+External      bool   `yaml:"external"`
+TargetPort    int    `yaml:"targetPort"`
+Transport     string `yaml:"transport"`
+AllowInsecure bool   `yaml:"allowInsecure"`
+}
+
+type yamlTemplate struct {
+Containers []yamlContainer `yaml:"containers"`
+Scale      interface{}     `yaml:"scale"`
+}
+
+type yamlContainer struct {
+Image   string       `yaml:"image"`
+Name    string       `yaml:"name"`
+Env     []yamlEnvVar `yaml:"env"`
+Command []string     `yaml:"command"`
+Args    []string     `yaml:"args"`
+}
+
+type yamlEnvVar struct {
+Name      string `yaml:"name"`
+Value     string `yaml:"value"`
+SecretRef string `yaml:"secretRef"`
+}
+
+type yamlSecret struct {
+Name  string `yaml:"name"`
+Value string `yaml:"value"`
+}
+
+// ParseYAMLTemplate reads a .tmpl.yaml file, strips Go template expressions,
+// parses the cleaned YAML, and extracts a ServiceTemplate with IngressConfig,
+// ContainerDef, EnvVar, SecretDef, and tags.
+func ParseYAMLTemplate(filePath string) (ServiceTemplate, error) {
+content, err := os.ReadFile(filePath)
+if err != nil {
+return ServiceTemplate{}, fmt.Errorf("cannot read file '%s': %w", filePath, err)
+}
+
+// Strip Go template expressions before YAML parsing
+cleanedContent := stripGoTemplateExpressions(string(content))
+
+var doc yamlTemplateDoc
+if err := yaml.Unmarshal([]byte(cleanedContent), &doc); err != nil {
+return ServiceTemplate{}, fmt.Errorf("cannot parse YAML in '%s': %w", filePath, err)
+}
+
+st := ServiceTemplate{
+Path: filePath,
+Tags: doc.Tags,
+}
+
+// Derive service name from tags or filename
+if name, ok := doc.Tags["aspire-resource-name"]; ok && name != "" {
+st.ServiceName = name
+} else {
+// Fall back to filename stem (remove .tmpl.yaml)
+base := filepath.Base(filePath)
+st.ServiceName = strings.TrimSuffix(base, ".tmpl.yaml")
+}
+
+if azdName, ok := doc.Tags["azd-service-name"]; ok {
+st.AzdServiceName = azdName
+}
+
+// Extract ingress configuration
+if doc.Properties.Configuration.Ingress != nil {
+ing := doc.Properties.Configuration.Ingress
+st.Ingress = &IngressConfig{
+External:   ing.External,
+TargetPort: ing.TargetPort,
+Transport:  ing.Transport,
+}
+}
+
+// Extract containers
+for _, c := range doc.Properties.Template.Containers {
+containerDef := ContainerDef{
+Image:   c.Image,
+Name:    c.Name,
+Command: c.Command,
+Args:    c.Args,
+}
+
+for _, env := range c.Env {
+containerDef.Env = append(containerDef.Env, EnvVar{
+Name:      env.Name,
+Value:     env.Value,
+SecretRef: env.SecretRef,
+})
+}
+
+st.Containers = append(st.Containers, containerDef)
+}
+
+// Extract secrets
+for _, s := range doc.Properties.Configuration.Secrets {
+st.Secrets = append(st.Secrets, SecretDef{
+Name:  s.Name,
+Value: s.Value,
+})
+}
+
+return st, nil
+}
+
+// --- Bicep File Parsing ---
+
+// ParseBicepFile reads a Bicep file and extracts parameters and modules using regexp.
+func ParseBicepFile(filePath string) (BicepFile, error) {
+content, err := os.ReadFile(filePath)
+if err != nil {
+return BicepFile{}, fmt.Errorf("cannot read file '%s': %w", filePath, err)
+}
+
+text := string(content)
+bf := BicepFile{
+Path: filePath,
+}
+
+bf.Parameters = parseBicepParameters(text, filePath)
+bf.Modules = parseBicepModules(text)
+bf.Variables = parseBicepVariables(text)
+
+return bf, nil
 }
 
 // --- Parameter Parsing ---
 
 var (
-	paramRegex       = regexp.MustCompile(`(?m)^param\s+(\w+)\s+(\w+)(?:\s*=\s*(.+))?$`)
-	descriptionRegex = regexp.MustCompile(`@description\('([^']*)'\)`)
-	secureRegex      = regexp.MustCompile(`@secure\(\)`)
+paramRegex       = regexp.MustCompile(`(?m)^param\s+(\w+)\s+(\w+)(?:\s*=\s*(.+))?$`)
+descriptionRegex = regexp.MustCompile(`@description\('([^']*)'\)`)
+secureRegex      = regexp.MustCompile(`@secure\(\)`)
 )
 
 // parseBicepParameters extracts all parameter declarations from Bicep text.
 func parseBicepParameters(text string, sourceFile string) []BicepParameter {
-	var params []BicepParameter
-	lines := strings.Split(text, "\n")
+var params []BicepParameter
+lines := strings.Split(text, "\n")
 
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		match := paramRegex.FindStringSubmatch(trimmed)
-		if match == nil {
-			continue
-		}
+for i, line := range lines {
+trimmed := strings.TrimSpace(line)
+match := paramRegex.FindStringSubmatch(trimmed)
+if match == nil {
+continue
+}
 
-		param := BicepParameter{
-			Name:       match[1],
-			Type:       match[2],
-			SourceFile: sourceFile,
-		}
+param := BicepParameter{
+Name:       match[1],
+Type:       match[2],
+SourceFile: sourceFile,
+}
 
-		if len(match) > 3 && match[3] != "" {
-			param.DefaultValue = strings.TrimSpace(match[3])
-		}
+if len(match) > 3 && match[3] != "" {
+param.DefaultValue = strings.TrimSpace(match[3])
+}
 
-		// Look backwards for decorators
-		for j := i - 1; j >= 0; j-- {
-			prevLine := strings.TrimSpace(lines[j])
-			if prevLine == "" {
-				break
-			}
+// Look backwards for decorators
+for j := i - 1; j >= 0; j-- {
+prevLine := strings.TrimSpace(lines[j])
+if prevLine == "" {
+break
+}
 
-			if descMatch := descriptionRegex.FindStringSubmatch(prevLine); descMatch != nil {
-				param.Description = descMatch[1]
-			}
+if descMatch := descriptionRegex.FindStringSubmatch(prevLine); descMatch != nil {
+param.Description = descMatch[1]
+}
 
-			if secureRegex.MatchString(prevLine) {
-				param.IsSecure = true
-			}
+if secureRegex.MatchString(prevLine) {
+param.IsSecure = true
+}
 
-			// Stop if we hit something that's not a decorator
-			if !strings.HasPrefix(prevLine, "@") {
-				break
-			}
-		}
+// Stop if we hit something that's not a decorator or metadata
+if !strings.HasPrefix(prevLine, "@") {
+break
+}
+}
 
-		params = append(params, param)
-	}
+params = append(params, param)
+}
 
-	return params
+return params
 }
 
 // --- Module Parsing ---
@@ -399,80 +431,80 @@ var moduleDeclRegex = regexp.MustCompile(`(?m)^module\s+(\w+)\s+'([^']+)'\s*=\s*
 
 // parseBicepModules extracts all module declarations from Bicep text.
 func parseBicepModules(text string) []BicepModule {
-	var modules []BicepModule
-	matches := moduleDeclRegex.FindAllStringSubmatchIndex(text, -1)
+var modules []BicepModule
+matches := moduleDeclRegex.FindAllStringSubmatchIndex(text, -1)
 
-	for _, loc := range matches {
-		name := text[loc[2]:loc[3]]
-		source := text[loc[4]:loc[5]]
+for _, loc := range matches {
+name := text[loc[2]:loc[3]]
+source := text[loc[4]:loc[5]]
 
-		// Find the matching closing brace
-		bodyStart := loc[1] - 1
-		bodyEnd := findMatchingBrace(text, bodyStart)
-		if bodyEnd < 0 {
-			continue
-		}
+// Find the matching closing brace
+bodyStart := loc[1] - 1
+bodyEnd := findMatchingBrace(text, bodyStart)
+if bodyEnd < 0 {
+continue
+}
 
-		body := text[bodyStart : bodyEnd+1]
+body := text[bodyStart : bodyEnd+1]
 
-		module := BicepModule{
-			Name:       name,
-			Source:     source,
-			Parameters: extractModuleParams(body),
-			DependsOn:  extractDependsOn(body),
-		}
+module := BicepModule{
+Name:       name,
+Source:     source,
+Parameters: extractModuleParams(body),
+DependsOn:  extractDependsOn(body),
+}
 
-		modules = append(modules, module)
-	}
+modules = append(modules, module)
+}
 
-	return modules
+return modules
 }
 
 // extractModuleParams extracts parameter expressions from a module body.
 func extractModuleParams(body string) map[string]string {
-	params := make(map[string]string)
-	paramsBlock := extractBlock(body, "params")
-	if paramsBlock == "" {
-		return params
-	}
+params := make(map[string]string)
+paramsBlock := extractBlock(body, "params")
+if paramsBlock == "" {
+return params
+}
 
-	paramAssignRegex := regexp.MustCompile(`(?m)^\s*(\w+)\s*:\s*(.+)$`)
-	matches := paramAssignRegex.FindAllStringSubmatch(paramsBlock, -1)
-	for _, match := range matches {
-		params[match[1]] = strings.TrimSpace(match[2])
-	}
+paramAssignRegex := regexp.MustCompile(`(?m)^\s*(\w+)\s*:\s*(.+)$`)
+matches := paramAssignRegex.FindAllStringSubmatch(paramsBlock, -1)
+for _, match := range matches {
+params[match[1]] = strings.TrimSpace(match[2])
+}
 
-	return params
+return params
 }
 
 // extractDependsOn extracts the dependsOn array from a module body.
 func extractDependsOn(body string) []string {
-	dependsOnStart := strings.Index(body, "dependsOn:")
-	if dependsOnStart < 0 {
-		return nil
-	}
+dependsOnStart := strings.Index(body, "dependsOn:")
+if dependsOnStart < 0 {
+return nil
+}
 
-	bracketStart := strings.Index(body[dependsOnStart:], "[")
-	if bracketStart < 0 {
-		return nil
-	}
-	bracketStart += dependsOnStart
+bracketStart := strings.Index(body[dependsOnStart:], "[")
+if bracketStart < 0 {
+return nil
+}
+bracketStart += dependsOnStart
 
-	bracketEnd := findMatchingBracket(body, bracketStart)
-	if bracketEnd < 0 {
-		return nil
-	}
+bracketEnd := findMatchingBracket(body, bracketStart)
+if bracketEnd < 0 {
+return nil
+}
 
-	content := body[bracketStart+1 : bracketEnd]
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
-			deps = append(deps, trimmed)
-		}
-	}
+content := body[bracketStart+1 : bracketEnd]
+var deps []string
+for _, line := range strings.Split(content, "\n") {
+trimmed := strings.TrimSpace(line)
+if trimmed != "" {
+deps = append(deps, trimmed)
+}
+}
 
-	return deps
+return deps
 }
 
 // --- Variable Parsing ---
@@ -481,170 +513,179 @@ var varRegex = regexp.MustCompile(`(?m)^var\s+(\w+)\s*=\s*(.+)$`)
 
 // parseBicepVariables extracts all variable declarations from Bicep text.
 func parseBicepVariables(text string) []BicepVariable {
-	var variables []BicepVariable
-	matches := varRegex.FindAllStringSubmatch(text, -1)
+var variables []BicepVariable
+matches := varRegex.FindAllStringSubmatch(text, -1)
 
-	for _, match := range matches {
-		variables = append(variables, BicepVariable{
-			Name:  match[1],
-			Value: strings.TrimSpace(match[2]),
-		})
-	}
+for _, match := range matches {
+variables = append(variables, BicepVariable{
+Name:  match[1],
+Value: strings.TrimSpace(match[2]),
+})
+}
 
-	return variables
+return variables
 }
 
 // --- Utility Functions ---
 
 // findMatchingBrace finds the position of the closing brace matching the opening brace at position start.
 func findMatchingBrace(text string, start int) int {
-	if start >= len(text) || text[start] != '{' {
-		return -1
-	}
+if start >= len(text) || text[start] != '{' {
+return -1
+}
 
-	depth := 0
-	inString := false
-	stringChar := byte(0)
+depth := 0
+inString := false
+stringChar := byte(0)
 
-	for i := start; i < len(text); i++ {
-		ch := text[i]
+for i := start; i < len(text); i++ {
+ch := text[i]
 
-		if inString {
-			if ch == stringChar {
-				inString = false
-			}
-			continue
-		}
+if inString {
+if ch == stringChar {
+inString = false
+}
+continue
+}
 
-		if ch == '\'' || ch == '"' {
-			inString = true
-			stringChar = ch
-			continue
-		}
+if ch == '\'' || ch == '"' {
+inString = true
+stringChar = ch
+continue
+}
 
-		// Skip single-line comments
-		if ch == '/' && i+1 < len(text) && text[i+1] == '/' {
-			// Skip to end of line
-			for i < len(text) && text[i] != '\n' {
-				i++
-			}
-			continue
-		}
+// Skip single-line comments
+if ch == '/' && i+1 < len(text) && text[i+1] == '/' {
+for i < len(text) && text[i] != '\n' {
+i++
+}
+continue
+}
 
-		// Skip block comments
-		if ch == '/' && i+1 < len(text) && text[i+1] == '*' {
-			i += 2
-			for i+1 < len(text) {
-				if text[i] == '*' && text[i+1] == '/' {
-					i++
-					break
-				}
-				i++
-			}
-			continue
-		}
+// Skip block comments
+if ch == '/' && i+1 < len(text) && text[i+1] == '*' {
+i += 2
+for i+1 < len(text) {
+if text[i] == '*' && text[i+1] == '/' {
+i++
+break
+}
+i++
+}
+continue
+}
 
-		if ch == '{' {
-			depth++
-		} else if ch == '}' {
-			depth--
-			if depth == 0 {
-				return i
-			}
-		}
-	}
+if ch == '{' {
+depth++
+} else if ch == '}' {
+depth--
+if depth == 0 {
+return i
+}
+}
+}
 
-	return -1
+return -1
 }
 
 // findMatchingBracket finds the position of the closing bracket matching the opening bracket at position start.
 func findMatchingBracket(text string, start int) int {
-	if start >= len(text) || text[start] != '[' {
-		return -1
-	}
+if start >= len(text) || text[start] != '[' {
+return -1
+}
 
-	depth := 0
-	inString := false
-	stringChar := byte(0)
+depth := 0
+inString := false
+stringChar := byte(0)
 
-	for i := start; i < len(text); i++ {
-		ch := text[i]
+for i := start; i < len(text); i++ {
+ch := text[i]
 
-		if inString {
-			if ch == stringChar {
-				inString = false
-			}
-			continue
-		}
+if inString {
+if ch == stringChar {
+inString = false
+}
+continue
+}
 
-		if ch == '\'' || ch == '"' {
-			inString = true
-			stringChar = ch
-			continue
-		}
+if ch == '\'' || ch == '"' {
+inString = true
+stringChar = ch
+continue
+}
 
-		if ch == '[' {
-			depth++
-		} else if ch == ']' {
-			depth--
-			if depth == 0 {
-				return i
-			}
-		}
-	}
+if ch == '[' {
+depth++
+} else if ch == ']' {
+depth--
+if depth == 0 {
+return i
+}
+}
+}
 
-	return -1
+return -1
 }
 
 // extractBlock extracts the content of a named block (e.g., "ingress: { ... }").
 func extractBlock(body string, name string) string {
-	// Match "name: {" or "name: \n {"
-	patterns := []string{
-		name + ":",
-	}
+patterns := []string{
+name + ":",
+}
 
-	for _, pattern := range patterns {
-		idx := strings.Index(body, pattern)
-		if idx < 0 {
-			continue
-		}
+for _, pattern := range patterns {
+idx := strings.Index(body, pattern)
+if idx < 0 {
+continue
+}
 
-		// Find the opening brace after the colon
-		afterColon := body[idx+len(pattern):]
-		braceIdx := strings.Index(afterColon, "{")
-		if braceIdx < 0 {
-			continue
-		}
+afterColon := body[idx+len(pattern):]
+braceIdx := strings.Index(afterColon, "{")
+if braceIdx < 0 {
+continue
+}
 
-		absIdx := idx + len(pattern) + braceIdx
-		endIdx := findMatchingBrace(body, absIdx)
-		if endIdx < 0 {
-			continue
-		}
+absIdx := idx + len(pattern) + braceIdx
+endIdx := findMatchingBrace(body, absIdx)
+if endIdx < 0 {
+continue
+}
 
-		return body[absIdx : endIdx+1]
-	}
+return body[absIdx : endIdx+1]
+}
 
-	return ""
+return ""
 }
 
 // extractSimpleProperty extracts a simple property value like "name: 'value'".
 func extractSimpleProperty(body string, name string) string {
-	re := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(name) + `\s*:\s*(.+)$`)
-	match := re.FindStringSubmatch(body)
-	if match == nil {
-		return ""
-	}
-	return strings.TrimSpace(match[1])
+re := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(name) + `\s*:\s*(.+)$`)
+match := re.FindStringSubmatch(body)
+if match == nil {
+return ""
+}
+return strings.TrimSpace(match[1])
 }
 
 // extractSimpleValue extracts a simple value for a property, trimming whitespace.
 func extractSimpleValue(body string, name string) string {
-	val := extractSimpleProperty(body, name)
-	return strings.TrimSpace(val)
+val := extractSimpleProperty(body, name)
+return strings.TrimSpace(val)
 }
 
 // countLines counts the number of newlines before the given position (1-based line number).
 func countLines(text string) int {
-	return strings.Count(text, "\n") + 1
+return strings.Count(text, "\n") + 1
+}
+
+// extractTargetPortDefault extracts the default port from a {{ targetPortOrDefault N }} expression.
+func extractTargetPortDefault(value string) (int, bool) {
+match := targetPortRegex.FindStringSubmatch(value)
+if len(match) > 1 {
+port, err := strconv.Atoi(match[1])
+if err == nil {
+return port, true
+}
+}
+return 0, false
 }

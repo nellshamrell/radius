@@ -20,6 +20,80 @@ import "time"
 
 // --- Parsed Model (Input) ---
 
+// AspireAppDescriptor is the top-level entity representing the fully parsed Aspire application.
+type AspireAppDescriptor struct {
+	// RootDir is the absolute path to the Aspire application root directory.
+	RootDir string `json:"rootDir"`
+	// AppHostDir is the absolute path to the AppHost project directory (contains infra/).
+	AppHostDir string `json:"appHostDir"`
+	// ServiceTemplates contains the parsed per-service YAML templates.
+	ServiceTemplates []ServiceTemplate `json:"serviceTemplates"`
+	// MainBicep is the parsed solution-level main.bicep (parameters, modules).
+	MainBicep *BicepFile `json:"mainBicep,omitempty"`
+	// ParametersJSON is the parsed main.parameters.json content.
+	ParametersJSON map[string]any `json:"parametersJSON,omitempty"`
+}
+
+// ServiceTemplate represents a parsed per-service .tmpl.yaml file.
+type ServiceTemplate struct {
+	// Path is the absolute file path of the source .tmpl.yaml file.
+	Path string `json:"path"`
+	// ServiceName is the service name from tags.aspire-resource-name or filename stem.
+	ServiceName string `json:"serviceName"`
+	// AzdServiceName is the service name from tags.azd-service-name.
+	AzdServiceName string `json:"azdServiceName,omitempty"`
+	// Ingress is the parsed ingress configuration (port, external, transport).
+	Ingress *IngressConfig `json:"ingress,omitempty"`
+	// Containers contains container definitions from template.containers.
+	Containers []ContainerDef `json:"containers"`
+	// Secrets contains secrets from configuration.secrets.
+	Secrets []SecretDef `json:"secrets,omitempty"`
+	// Tags contains the resource tags.
+	Tags map[string]string `json:"tags,omitempty"`
+}
+
+// IngressConfig represents the ingress configuration extracted from a .tmpl.yaml file.
+type IngressConfig struct {
+	// External indicates whether the service is externally accessible.
+	External bool `json:"external"`
+	// TargetPort is the target port number.
+	TargetPort int `json:"targetPort"`
+	// Transport is the transport protocol (http, tcp).
+	Transport string `json:"transport"`
+}
+
+// ContainerDef represents a container definition from template.containers[].
+type ContainerDef struct {
+	// Image is the image expression (typically {{ .Image }} → placeholder).
+	Image string `json:"image"`
+	// Name is the container name.
+	Name string `json:"name"`
+	// Env contains the environment variables.
+	Env []EnvVar `json:"env,omitempty"`
+	// Command is the container command override (if any).
+	Command []string `json:"command,omitempty"`
+	// Args is the container arguments (if any).
+	Args []string `json:"args,omitempty"`
+}
+
+// EnvVar represents an environment variable from a container definition.
+type EnvVar struct {
+	// Name is the environment variable name.
+	Name string `json:"name"`
+	// Value is the literal value (if set directly).
+	Value string `json:"value,omitempty"`
+	// SecretRef is the secret reference name (if set via secretRef).
+	SecretRef string `json:"secretRef,omitempty"`
+}
+
+// SecretDef represents a secret from configuration.secrets[].
+type SecretDef struct {
+	// Name is the secret name.
+	Name string `json:"name"`
+	// Value is the secret value expression (may contain Go template expressions).
+	Value string `json:"value"`
+}
+
 // BicepFile represents a single parsed Bicep file.
 type BicepFile struct {
 	// Path is the absolute file path of the source Bicep file.

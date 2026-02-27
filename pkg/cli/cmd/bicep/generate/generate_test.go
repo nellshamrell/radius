@@ -38,11 +38,11 @@ func Test_Validate(t *testing.T) {
 	testcases := []radcli.ValidateInput{
 		{
 			Name:          "rad bicep generate - valid with from-aspire flag",
-			Input:         []string{"--from-aspire", "./testdata/aspire-starter"},
+			Input:         []string{"--from-aspire", "./testdata/example-aspire-app"},
 			ExpectedValid: true,
 			ValidateCallback: func(t *testing.T, r framework.Runner) {
 				runner := r.(*Runner)
-				require.Equal(t, "./testdata/aspire-starter", runner.FromAspirePath)
+				require.Equal(t, "./testdata/example-aspire-app", runner.FromAspirePath)
 				require.Equal(t, "./app.bicep", runner.OutputPath)
 				require.Equal(t, "./mapping-report.md", runner.ReportPath)
 				require.False(t, runner.Quiet)
@@ -51,17 +51,32 @@ func Test_Validate(t *testing.T) {
 		},
 		{
 			Name:          "rad bicep generate - valid with all flags",
-			Input:         []string{"--from-aspire", "./testdata/aspire-starter", "--output", "./custom.bicep", "--app-name", "my-app", "--report", "./custom-report.md", "--quiet", "--deterministic"},
+			Input:         []string{"--from-aspire", "./testdata/example-aspire-app", "--output", "./custom.bicep", "--app-name", "my-app", "--report", "./custom-report.md", "--parameter", "image-namespace=my-namespace", "--quiet", "--deterministic"},
 			ExpectedValid: true,
 			ValidateCallback: func(t *testing.T, r framework.Runner) {
 				runner := r.(*Runner)
-				require.Equal(t, "./testdata/aspire-starter", runner.FromAspirePath)
+				require.Equal(t, "./testdata/example-aspire-app", runner.FromAspirePath)
 				require.Equal(t, "./custom.bicep", runner.OutputPath)
 				require.Equal(t, "my-app", runner.AppName)
 				require.Equal(t, "./custom-report.md", runner.ReportPath)
+				require.Equal(t, "my-namespace", runner.Parameters["image-namespace"])
 				require.True(t, runner.Quiet)
 				require.True(t, runner.Deterministic)
 			},
+		},
+		{
+			Name:          "rad bicep generate - valid with parameter flag",
+			Input:         []string{"--from-aspire", "./testdata/example-aspire-app", "-p", "image-namespace=my-registry"},
+			ExpectedValid: true,
+			ValidateCallback: func(t *testing.T, r framework.Runner) {
+				runner := r.(*Runner)
+				require.Equal(t, "my-registry", runner.Parameters["image-namespace"])
+			},
+		},
+		{
+			Name:          "rad bicep generate - invalid parameter format",
+			Input:         []string{"--from-aspire", "./testdata/example-aspire-app", "--parameter", "bad-format"},
+			ExpectedValid: false,
 		},
 		{
 			Name:          "rad bicep generate - invalid without from-aspire",
@@ -73,16 +88,17 @@ func Test_Validate(t *testing.T) {
 	radcli.SharedValidateValidation(t, NewCommand, testcases)
 }
 
-func Test_Run_AspireStarter(t *testing.T) {
+func Test_Run_ExampleAspireApp(t *testing.T) {
 	outputDir := t.TempDir()
 	outputPath := filepath.Join(outputDir, "app.bicep")
 
 	runner := &Runner{
 		Output:         &output.MockOutput{},
-		FromAspirePath: "./testdata/aspire-starter",
+		FromAspirePath: "./testdata/example-aspire-app",
 		OutputPath:     outputPath,
 		AppName:        "",
 		ReportPath:     filepath.Join(outputDir, "mapping-report.md"),
+		Parameters:     map[string]string{},
 		Quiet:          false,
 		Deterministic:  true,
 	}
@@ -98,13 +114,15 @@ func Test_Run_AspireStarter(t *testing.T) {
 	content, err := os.ReadFile(outputPath)
 	require.NoError(t, err)
 
-	output := string(content)
-	assert.Contains(t, output, "extension radius")
-	assert.Contains(t, output, "Radius.Core/applications@2025-08-01-preview")
-	assert.Contains(t, output, "resource apiservice")
-	assert.Contains(t, output, "resource webfrontend")
-	assert.Contains(t, output, "resource cache")
-	assert.Contains(t, output, "DETERMINISTIC", "deterministic flag should set fixed timestamp")
+	bicepOutput := string(content)
+	assert.Contains(t, bicepOutput, "extension radius")
+	assert.Contains(t, bicepOutput, "Radius.Core/applications@2025-08-01-preview")
+	assert.Contains(t, bicepOutput, "resource apiservice")
+	assert.Contains(t, bicepOutput, "resource webfrontend")
+	assert.Contains(t, bicepOutput, "resource cache")
+	assert.Contains(t, bicepOutput, "resource sqlserver")
+	assert.Contains(t, bicepOutput, "Applications.Datastores/sqlDatabases")
+	assert.Contains(t, bicepOutput, "DETERMINISTIC", "deterministic flag should set fixed timestamp")
 }
 
 func Test_Run_CustomAppName(t *testing.T) {
@@ -113,10 +131,11 @@ func Test_Run_CustomAppName(t *testing.T) {
 
 	runner := &Runner{
 		Output:         &output.MockOutput{},
-		FromAspirePath: "./testdata/aspire-starter",
+		FromAspirePath: "./testdata/example-aspire-app",
 		OutputPath:     outputPath,
 		AppName:        "custom-name",
 		ReportPath:     filepath.Join(outputDir, "mapping-report.md"),
+		Parameters:     map[string]string{},
 		Quiet:          false,
 		Deterministic:  true,
 	}
@@ -136,8 +155,33 @@ func Test_Run_InvalidPath(t *testing.T) {
 		FromAspirePath: "./testdata/nonexistent",
 		OutputPath:     "/tmp/test-output.bicep",
 		ReportPath:     "/tmp/test-report.md",
+		Parameters:     map[string]string{},
 	}
 
 	err := runner.Run(context.Background())
 	require.Error(t, err, "should fail with nonexistent directory")
+}
+
+func Test_Run_ImageNamespaceParameter(t *testing.T) {
+	outputDir := t.TempDir()
+	outputPath := filepath.Join(outputDir, "app.bicep")
+
+	runner := &Runner{
+		Output:         &output.MockOutput{},
+		FromAspirePath: "./testdata/example-aspire-app",
+		OutputPath:     outputPath,
+		ReportPath:     filepath.Join(outputDir, "mapping-report.md"),
+		Parameters:     map[string]string{"image-namespace": "my-namespace"},
+		Deterministic:  true,
+	}
+
+	err := runner.Run(context.Background())
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+
+	bicepOutput := string(content)
+	assert.Contains(t, bicepOutput, "my-namespace/apiservice:latest", "apiservice image should have namespace prefix")
+	assert.Contains(t, bicepOutput, "my-namespace/webfrontend:latest", "webfrontend image should have namespace prefix")
 }

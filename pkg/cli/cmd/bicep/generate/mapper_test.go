@@ -23,23 +23,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_MapToRadius_AspireStarter(t *testing.T) {
-	// Parse the aspire-starter test fixtures
-	filePaths, err := ScanDirectory("./testdata/aspire-starter")
+func Test_MapToRadius_ExampleAspireApp(t *testing.T) {
+	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
 	require.NoError(t, err)
 
-	var parsedFiles []BicepFile
-	for _, fp := range filePaths {
-		bf, err := ParseFile(fp)
-		require.NoError(t, err)
-		parsedFiles = append(parsedFiles, bf)
-	}
-
-	app, err := MapToRadius(parsedFiles, "", "./testdata/aspire-starter")
+	app, err := MapToRadius(descriptor, map[string]string{})
 	require.NoError(t, err)
 
 	t.Run("application name derived from directory", func(t *testing.T) {
-		assert.Equal(t, "aspire-starter", app.Name)
+		assert.Equal(t, "example-aspire-app", app.Name)
 	})
 
 	t.Run("2 containers mapped", func(t *testing.T) {
@@ -59,11 +51,6 @@ func Test_MapToRadius_AspireStarter(t *testing.T) {
 		assert.Equal(t, 8080, api.Ports[0].ContainerPort)
 		assert.Equal(t, "TCP", api.Ports[0].Protocol)
 
-		// apiservice → cache connection
-		require.Len(t, api.Connections, 1, "apiservice should have 1 connection")
-		assert.Equal(t, "cache", api.Connections[0].Name)
-		assert.Equal(t, "cache.id", api.Connections[0].Source)
-
 		// webfrontend container
 		web, ok := containersByName["webfrontend"]
 		require.True(t, ok, "should have webfrontend container")
@@ -71,20 +58,56 @@ func Test_MapToRadius_AspireStarter(t *testing.T) {
 		assert.Equal(t, "webfrontend:latest", web.ImageDefault)
 		require.Len(t, web.Ports, 1)
 		assert.Equal(t, 8080, web.Ports[0].ContainerPort)
-
-		// webfrontend → apiservice connection
-		require.Len(t, web.Connections, 1, "webfrontend should have 1 connection")
-		assert.Equal(t, "apiservice", web.Connections[0].Name)
-		assert.Equal(t, "apiservice.id", web.Connections[0].Source)
+		assert.True(t, web.IsExternal, "webfrontend should be external")
 	})
 
-	t.Run("1 Redis dependency mapped", func(t *testing.T) {
-		require.Len(t, app.Dependencies, 1, "should have 1 dependency")
-		dep := app.Dependencies[0]
-		assert.Equal(t, "cache", dep.Name)
-		assert.Equal(t, "Applications.Datastores/redisCaches", dep.Type)
-		assert.True(t, dep.IsRecipeBacked)
-		assert.False(t, dep.IsPlaceholder)
+	t.Run("2 dependencies mapped", func(t *testing.T) {
+		require.Len(t, app.Dependencies, 2, "should have 2 dependencies")
+
+		depsByName := make(map[string]RadiusDependency)
+		for _, d := range app.Dependencies {
+			depsByName[d.Name] = d
+		}
+
+		cache, ok := depsByName["cache"]
+		require.True(t, ok, "should have cache dependency")
+		assert.Equal(t, "Applications.Datastores/redisCaches", cache.Type)
+		assert.True(t, cache.IsRecipeBacked)
+		assert.False(t, cache.IsPlaceholder)
+
+		sqlserver, ok := depsByName["sqlserver"]
+		require.True(t, ok, "should have sqlserver dependency")
+		assert.Equal(t, "Applications.Datastores/sqlDatabases", sqlserver.Type)
+		assert.True(t, sqlserver.IsRecipeBacked)
+		assert.False(t, sqlserver.IsPlaceholder)
+	})
+
+	t.Run("connections derived correctly", func(t *testing.T) {
+		containersByName := make(map[string]RadiusContainer)
+		for _, c := range app.Containers {
+			containersByName[c.Name] = c
+		}
+
+		// apiservice → sqlserver (from ConnectionStrings__weatherdb → sqlserver via db heuristic)
+		api := containersByName["apiservice"]
+		apiConnsByName := make(map[string]RadiusConnection)
+		for _, conn := range api.Connections {
+			apiConnsByName[conn.Name] = conn
+		}
+		_, hasSql := apiConnsByName["sqlserver"]
+		assert.True(t, hasSql, "apiservice should have sqlserver connection")
+
+		// webfrontend → apiservice (from services__apiservice__http__0)
+		// webfrontend → cache (from ConnectionStrings__cache)
+		web := containersByName["webfrontend"]
+		webConnsByName := make(map[string]RadiusConnection)
+		for _, conn := range web.Connections {
+			webConnsByName[conn.Name] = conn
+		}
+		_, hasApi := webConnsByName["apiservice"]
+		assert.True(t, hasApi, "webfrontend should have apiservice connection")
+		_, hasCache := webConnsByName["cache"]
+		assert.True(t, hasCache, "webfrontend should have cache connection")
 	})
 
 	t.Run("2 image parameters generated", func(t *testing.T) {
@@ -113,6 +136,7 @@ func Test_MapToRadius_AspireStarter(t *testing.T) {
 
 		// Dependencies sorted by name
 		assert.Equal(t, "cache", app.Dependencies[0].Name)
+		assert.Equal(t, "sqlserver", app.Dependencies[1].Name)
 
 		// Parameters sorted by name
 		assert.Equal(t, "apiserviceImage", app.Parameters[0].Name)
@@ -121,95 +145,139 @@ func Test_MapToRadius_AspireStarter(t *testing.T) {
 }
 
 func Test_MapToRadius_AppNameOverride(t *testing.T) {
-	filePaths, err := ScanDirectory("./testdata/aspire-starter")
+	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
 	require.NoError(t, err)
 
-	var parsedFiles []BicepFile
-	for _, fp := range filePaths {
-		bf, err := ParseFile(fp)
-		require.NoError(t, err)
-		parsedFiles = append(parsedFiles, bf)
-	}
-
-	app, err := MapToRadius(parsedFiles, "my-custom-app", "./testdata/aspire-starter")
+	app, err := MapToRadius(descriptor, map[string]string{"app-name": "my-custom-app"})
 	require.NoError(t, err)
 
 	assert.Equal(t, "my-custom-app", app.Name, "app name should use override")
 }
 
+func Test_MapToRadius_ImageNamespace(t *testing.T) {
+	descriptor, err := ScanDirectory("./testdata/example-aspire-app")
+	require.NoError(t, err)
+
+	app, err := MapToRadius(descriptor, map[string]string{"image-namespace": "my-namespace"})
+	require.NoError(t, err)
+
+	containersByName := make(map[string]RadiusContainer)
+	for _, c := range app.Containers {
+		containersByName[c.Name] = c
+	}
+
+	// Image defaults should be prefixed with namespace
+	api := containersByName["apiservice"]
+	assert.Equal(t, "my-namespace/apiservice:latest", api.ImageDefault, "apiservice image should have namespace prefix")
+
+	web := containersByName["webfrontend"]
+	assert.Equal(t, "my-namespace/webfrontend:latest", web.ImageDefault, "webfrontend image should have namespace prefix")
+
+	// Image parameters should also reflect the namespace in their default values
+	paramsByName := make(map[string]RadiusParameter)
+	for _, p := range app.Parameters {
+		paramsByName[p.Name] = p
+	}
+
+	apiParam := paramsByName["apiserviceImage"]
+	assert.Equal(t, "my-namespace/apiservice:latest", apiParam.DefaultValue)
+
+	webParam := paramsByName["webfrontendImage"]
+	assert.Equal(t, "my-namespace/webfrontend:latest", webParam.DefaultValue)
+}
+
 func Test_deriveAppName(t *testing.T) {
 	testCases := []struct {
-		name            string
-		mainFile        *BicepFile
-		appNameOverride string
-		sourceDir       string
-		expected        string
+		name       string
+		descriptor *AspireAppDescriptor
+		override   string
+		expected   string
 	}{
 		{
-			name:            "override takes precedence",
-			mainFile:        nil,
-			appNameOverride: "my-app",
-			sourceDir:       "/tmp/test",
-			expected:        "my-app",
+			name:       "override takes precedence",
+			descriptor: &AspireAppDescriptor{RootDir: "/tmp/test"},
+			override:   "my-app",
+			expected:   "my-app",
 		},
 		{
 			name: "environmentName param from main.bicep",
-			mainFile: &BicepFile{
-				Parameters: []BicepParameter{
-					{Name: "environmentName", Type: "string", DefaultValue: "'aspire-demo'"},
+			descriptor: &AspireAppDescriptor{
+				RootDir: "/tmp/test",
+				MainBicep: &BicepFile{
+					Parameters: []BicepParameter{
+						{Name: "environmentName", Type: "string", DefaultValue: "'aspire-demo'"},
+					},
 				},
 			},
-			appNameOverride: "",
-			sourceDir:       "/tmp/test",
-			expected:        "aspire-demo",
+			override: "",
+			expected: "aspire-demo",
 		},
 		{
-			name:            "falls back to directory name",
-			mainFile:        &BicepFile{},
-			appNameOverride: "",
-			sourceDir:       "/tmp/my-project",
-			expected:        "my-project",
+			name:       "falls back to directory name",
+			descriptor: &AspireAppDescriptor{RootDir: "/tmp/my-project"},
+			override:   "",
+			expected:   "my-project",
 		},
 		{
-			name:            "infra directory goes up one level",
-			mainFile:        &BicepFile{},
-			appNameOverride: "",
-			sourceDir:       "/tmp/my-project/infra",
-			expected:        "my-project",
-		},
-		{
-			name:            "empty fallback",
-			mainFile:        nil,
-			appNameOverride: "",
-			sourceDir:       ".",
-			expected:        "aspire-app",
+			name:       "infra directory goes up one level",
+			descriptor: &AspireAppDescriptor{RootDir: "/tmp/my-project/infra"},
+			override:   "",
+			expected:   "my-project",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := deriveAppName(tc.mainFile, tc.appNameOverride, tc.sourceDir)
+			result := deriveAppName(tc.descriptor, tc.override)
 			assert.Equal(t, tc.expected, result)
 		})
 	}
 }
 
-func Test_isContainerApp(t *testing.T) {
-	assert.True(t, isContainerApp("Microsoft.App/containerApps@2024-03-01"))
-	assert.True(t, isContainerApp("Microsoft.App/containerApps@2023-05-01"))
-	assert.False(t, isContainerApp("Microsoft.Cache/redis@2023-08-01"))
-	assert.False(t, isContainerApp("Microsoft.Sql/servers@2023-08-01"))
-}
+func Test_classifyAsDependency(t *testing.T) {
+	testCases := []struct {
+		name     string
+		st       ServiceTemplate
+		expected bool
+	}{
+		{
+			name: "cache with tcp transport and port 6379",
+			st: ServiceTemplate{
+				ServiceName: "cache",
+				Ingress:     &IngressConfig{Transport: "tcp", TargetPort: 6379},
+			},
+			expected: true,
+		},
+		{
+			name: "sqlserver by name",
+			st: ServiceTemplate{
+				ServiceName: "sqlserver",
+				Ingress:     &IngressConfig{Transport: "tcp", TargetPort: 1433},
+			},
+			expected: true,
+		},
+		{
+			name: "apiservice with http transport",
+			st: ServiceTemplate{
+				ServiceName: "apiservice",
+				Ingress:     &IngressConfig{Transport: "http", TargetPort: 8080},
+			},
+			expected: false,
+		},
+		{
+			name: "webfrontend with http transport",
+			st: ServiceTemplate{
+				ServiceName: "webfrontend",
+				Ingress:     &IngressConfig{Transport: "http", TargetPort: 8080},
+			},
+			expected: false,
+		},
+	}
 
-func Test_isDependencyResource(t *testing.T) {
-	assert.True(t, isDependencyResource("Microsoft.Cache/redis@2023-08-01"))
-	assert.True(t, isDependencyResource("Microsoft.DocumentDB/databaseAccounts@2024-02-01"))
-	assert.True(t, isDependencyResource("Microsoft.Sql/servers@2023-08-01"))
-	assert.False(t, isDependencyResource("Microsoft.App/containerApps@2024-03-01"))
-}
-
-func Test_extractBaseResourceType(t *testing.T) {
-	assert.Equal(t, "Microsoft.Cache/redis", extractBaseResourceType("Microsoft.Cache/redis@2023-08-01"))
-	assert.Equal(t, "Microsoft.App/containerApps", extractBaseResourceType("Microsoft.App/containerApps@2024-03-01"))
-	assert.Equal(t, "NoVersion", extractBaseResourceType("NoVersion"))
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := classifyAsDependency(tc.st)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
 }

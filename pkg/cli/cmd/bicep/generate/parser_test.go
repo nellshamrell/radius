@@ -17,7 +17,6 @@ limitations under the License.
 package generate
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,22 +25,13 @@ import (
 
 func Test_ScanDirectory(t *testing.T) {
 	testCases := []struct {
-		name          string
-		dir           string
-		expectedCount int
-		expectedFiles []string
-		expectError   bool
+		name        string
+		dir         string
+		expectError bool
 	}{
 		{
-			name:          "aspire-starter discovers 4 bicep files in lexicographic order",
-			dir:           "./testdata/aspire-starter",
-			expectedCount: 4,
-			expectedFiles: []string{
-				"apiservice.bicep",
-				"cache.bicep",
-				"main.bicep",
-				"webfrontend.bicep",
-			},
+			name:        "example-aspire-app discovers AppHost infra with 4 tmpl.yaml files and main.bicep",
+			dir:         "./testdata/example-aspire-app",
 			expectError: false,
 		},
 		{
@@ -53,7 +43,7 @@ func Test_ScanDirectory(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			files, err := ScanDirectory(tc.dir)
+			descriptor, err := ScanDirectory(tc.dir)
 
 			if tc.expectError {
 				require.Error(t, err)
@@ -61,169 +51,185 @@ func Test_ScanDirectory(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Len(t, files, tc.expectedCount)
+			require.NotNil(t, descriptor)
 
-			// Verify lexicographic file order by base name
-			for i, expectedName := range tc.expectedFiles {
-				assert.Equal(t, expectedName, filepath.Base(files[i]),
-					"file at index %d should be %s", i, expectedName)
+			// Should discover 4 service templates
+			assert.Len(t, descriptor.ServiceTemplates, 4, "should have 4 service templates")
+
+			// Should discover main.bicep
+			require.NotNil(t, descriptor.MainBicep, "should have main.bicep")
+
+			// Verify all expected services discovered
+			serviceNames := make(map[string]bool)
+			for _, st := range descriptor.ServiceTemplates {
+				serviceNames[st.ServiceName] = true
 			}
+			assert.True(t, serviceNames["apiservice"], "should have apiservice")
+			assert.True(t, serviceNames["webfrontend"], "should have webfrontend")
+			assert.True(t, serviceNames["cache"], "should have cache")
+			assert.True(t, serviceNames["sqlserver"], "should have sqlserver")
 		})
 	}
 }
 
-func Test_ParseFile_MainBicep(t *testing.T) {
-	bf, err := ParseFile("./testdata/aspire-starter/main.bicep")
+func Test_ParseYAMLTemplate_Apiservice(t *testing.T) {
+	st, err := ParseYAMLTemplate("./testdata/example-aspire-app/AspireApp.AppHost/infra/apiservice.tmpl.yaml")
 	require.NoError(t, err)
 
-	// Should extract 3 module declarations
-	require.Len(t, bf.Modules, 3, "main.bicep should have 3 modules")
-
-	// Verify module names and source paths
-	modulesByName := make(map[string]BicepModule)
-	for _, m := range bf.Modules {
-		modulesByName[m.Name] = m
-	}
-
-	t.Run("apiservice module", func(t *testing.T) {
-		m, ok := modulesByName["apiservice"]
-		require.True(t, ok, "should have apiservice module")
-		assert.Equal(t, "./apiservice/apiservice.bicep", m.Source)
-		assert.Empty(t, m.DependsOn, "apiservice has no dependsOn")
+	t.Run("service name from tags", func(t *testing.T) {
+		assert.Equal(t, "apiservice", st.ServiceName)
 	})
 
-	t.Run("webfrontend module", func(t *testing.T) {
-		m, ok := modulesByName["webfrontend"]
-		require.True(t, ok, "should have webfrontend module")
-		assert.Equal(t, "./webfrontend/webfrontend.bicep", m.Source)
-		assert.Contains(t, m.DependsOn, "apiservice", "webfrontend depends on apiservice")
+	t.Run("ingress configuration", func(t *testing.T) {
+		require.NotNil(t, st.Ingress)
+		assert.Equal(t, 8080, st.Ingress.TargetPort)
+		assert.Equal(t, "http", st.Ingress.Transport)
+		assert.False(t, st.Ingress.External)
 	})
 
-	t.Run("cache module", func(t *testing.T) {
-		m, ok := modulesByName["cache"]
-		require.True(t, ok, "should have cache module")
-		assert.Equal(t, "./cache/cache.bicep", m.Source)
-		assert.Contains(t, m.DependsOn, "apiservice", "cache depends on apiservice")
-	})
+	t.Run("containers with ConnectionStrings__weatherdb env var", func(t *testing.T) {
+		require.Len(t, st.Containers, 1)
 
-	// Should extract 2 parameters
-	t.Run("parameters", func(t *testing.T) {
-		require.Len(t, bf.Parameters, 2, "main.bicep should have 2 parameters")
-
-		paramsByName := make(map[string]BicepParameter)
-		for _, p := range bf.Parameters {
-			paramsByName[p.Name] = p
+		found := false
+		for _, env := range st.Containers[0].Env {
+			if env.Name == "ConnectionStrings__weatherdb" {
+				found = true
+				assert.Equal(t, "connectionstrings--weatherdb", env.SecretRef)
+				break
+			}
 		}
+		assert.True(t, found, "should have ConnectionStrings__weatherdb env var")
+	})
 
-		envParam, ok := paramsByName["environmentName"]
-		require.True(t, ok, "should have environmentName param")
-		assert.Equal(t, "string", envParam.Type)
-		assert.Equal(t, "The environment name", envParam.Description)
-
-		locParam, ok := paramsByName["location"]
-		require.True(t, ok, "should have location param")
-		assert.Equal(t, "string", locParam.Type)
+	t.Run("secrets include connectionstrings--weatherdb", func(t *testing.T) {
+		found := false
+		for _, s := range st.Secrets {
+			if s.Name == "connectionstrings--weatherdb" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "should have connectionstrings--weatherdb secret")
 	})
 }
 
-func Test_ParseFile_ApiserviceBicep(t *testing.T) {
-	bf, err := ParseFile("./testdata/aspire-starter/apiservice/apiservice.bicep")
+func Test_ParseYAMLTemplate_Cache(t *testing.T) {
+	st, err := ParseYAMLTemplate("./testdata/example-aspire-app/AspireApp.AppHost/infra/cache.tmpl.yaml")
 	require.NoError(t, err)
 
-	// Should extract 1 containerApps resource
-	require.Len(t, bf.Resources, 1, "apiservice.bicep should have 1 resource")
-	res := bf.Resources[0]
-
-	t.Run("resource type and name", func(t *testing.T) {
-		assert.Equal(t, "apiservice", res.SymbolicName)
-		assert.Equal(t, "Microsoft.App/containerApps@2024-03-01", res.Type)
+	t.Run("service name from tags", func(t *testing.T) {
+		assert.Equal(t, "cache", st.ServiceName)
 	})
 
-	t.Run("ingress properties", func(t *testing.T) {
-		ingress, ok := res.Properties["ingress"].(map[string]any)
-		require.True(t, ok, "should have ingress properties")
-		assert.Equal(t, 8080, ingress["targetPort"], "targetPort should be 8080")
-		assert.Equal(t, false, ingress["external"], "external should be false")
+	t.Run("ingress configuration", func(t *testing.T) {
+		require.NotNil(t, st.Ingress)
+		assert.Equal(t, 6379, st.Ingress.TargetPort)
+		assert.Equal(t, "tcp", st.Ingress.Transport)
+		assert.False(t, st.Ingress.External)
+	})
+}
+
+func Test_ParseYAMLTemplate_Webfrontend(t *testing.T) {
+	st, err := ParseYAMLTemplate("./testdata/example-aspire-app/AspireApp.AppHost/infra/webfrontend.tmpl.yaml")
+	require.NoError(t, err)
+
+	t.Run("external ingress", func(t *testing.T) {
+		require.NotNil(t, st.Ingress)
+		assert.True(t, st.Ingress.External)
+		assert.Equal(t, 8080, st.Ingress.TargetPort)
+		assert.Equal(t, "http", st.Ingress.Transport)
 	})
 
-	t.Run("containers with env including ConnectionStrings__cache", func(t *testing.T) {
-		containers, ok := res.Properties["containers"].([]map[string]any)
-		require.True(t, ok, "should have containers")
-		require.Len(t, containers, 1, "should have 1 container")
+	t.Run("has services__apiservice__http__0 env var", func(t *testing.T) {
+		require.Len(t, st.Containers, 1)
 
-		envVars, ok := containers[0]["env"].([]map[string]string)
-		require.True(t, ok, "should have env vars")
-
-		// Find the ConnectionStrings__cache env var
 		found := false
-		for _, env := range envVars {
-			if env["name"] == "ConnectionStrings__cache" {
+		for _, env := range st.Containers[0].Env {
+			if env.Name == "services__apiservice__http__0" {
 				found = true
+				break
+			}
+		}
+		assert.True(t, found, "should have services__apiservice__http__0 env var")
+	})
+
+	t.Run("has ConnectionStrings__cache env var", func(t *testing.T) {
+		require.Len(t, st.Containers, 1)
+
+		found := false
+		for _, env := range st.Containers[0].Env {
+			if env.Name == "ConnectionStrings__cache" {
+				found = true
+				assert.Equal(t, "connectionstrings--cache", env.SecretRef)
 				break
 			}
 		}
 		assert.True(t, found, "should have ConnectionStrings__cache env var")
 	})
+}
 
-	// Should extract 2 parameters
-	t.Run("parameters", func(t *testing.T) {
-		require.Len(t, bf.Parameters, 2, "apiservice.bicep should have 2 parameters")
+func Test_ParseYAMLTemplate_Sqlserver(t *testing.T) {
+	st, err := ParseYAMLTemplate("./testdata/example-aspire-app/AspireApp.AppHost/infra/sqlserver.tmpl.yaml")
+	require.NoError(t, err)
+
+	t.Run("service name", func(t *testing.T) {
+		assert.Equal(t, "sqlserver", st.ServiceName)
+	})
+
+	t.Run("ingress configuration", func(t *testing.T) {
+		require.NotNil(t, st.Ingress)
+		assert.Equal(t, 1433, st.Ingress.TargetPort)
+		assert.Equal(t, "tcp", st.Ingress.Transport)
 	})
 }
 
-func Test_ParseFile_CacheBicep(t *testing.T) {
-	bf, err := ParseFile("./testdata/aspire-starter/cache/cache.bicep")
-	require.NoError(t, err)
+func Test_stripGoTemplateExpressions(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "strips {{ .Image }}",
+			input:    "image: {{ .Image }}",
+			expected: "image: IMAGE_PLACEHOLDER",
+		},
+		{
+			name:     "strips {{ securedParameter \"name\" }}",
+			input:    "value: '{{ securedParameter \"cache_password\" }}'",
+			expected: "value: 'SECURED_PARAM_cache_password'",
+		},
+		{
+			name:     "replaces {{ targetPortOrDefault N }} with default value",
+			input:    "targetPort: {{ targetPortOrDefault 8080 }}",
+			expected: "targetPort: 8080",
+		},
+		{
+			name:     "strips {{ .Env.* }} expressions",
+			input:    "value: {{ .Env.AZURE_LOCATION }}",
+			expected: "value: ",
+		},
+	}
 
-	// Should extract 1 Redis resource
-	require.Len(t, bf.Resources, 1, "cache.bicep should have 1 resource")
-	res := bf.Resources[0]
-
-	t.Run("Redis resource type", func(t *testing.T) {
-		assert.Equal(t, "cache", res.SymbolicName)
-		assert.Equal(t, "Microsoft.Cache/redis@2023-08-01", res.Type)
-	})
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := stripGoTemplateExpressions(tc.input)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
 }
 
-func Test_ParseFile_WebfrontendBicep(t *testing.T) {
-	bf, err := ParseFile("./testdata/aspire-starter/webfrontend/webfrontend.bicep")
+func Test_ParseBicepFile_MainBicep(t *testing.T) {
+	bf, err := ParseBicepFile("./testdata/example-aspire-app/infra/main.bicep")
 	require.NoError(t, err)
 
-	require.Len(t, bf.Resources, 1, "webfrontend.bicep should have 1 resource")
-	res := bf.Resources[0]
-
-	t.Run("resource type and name", func(t *testing.T) {
-		assert.Equal(t, "webfrontend", res.SymbolicName)
-		assert.Equal(t, "Microsoft.App/containerApps@2024-03-01", res.Type)
-	})
-
-	t.Run("ingress external true", func(t *testing.T) {
-		ingress, ok := res.Properties["ingress"].(map[string]any)
-		require.True(t, ok, "should have ingress properties")
-		assert.Equal(t, true, ingress["external"], "external should be true")
-		assert.Equal(t, 8080, ingress["targetPort"], "targetPort should be 8080")
-	})
-
-	t.Run("ConnectionStrings__apiservice env var", func(t *testing.T) {
-		containers, ok := res.Properties["containers"].([]map[string]any)
-		require.True(t, ok, "should have containers")
-		require.Len(t, containers, 1)
-
-		envVars, ok := containers[0]["env"].([]map[string]string)
-		require.True(t, ok, "should have env vars")
-
-		found := false
-		for _, env := range envVars {
-			if env["name"] == "ConnectionStrings__apiservice" {
-				found = true
-				break
-			}
+	t.Run("extracts parameters", func(t *testing.T) {
+		paramsByName := make(map[string]BicepParameter)
+		for _, p := range bf.Parameters {
+			paramsByName[p.Name] = p
 		}
-		assert.True(t, found, "should have ConnectionStrings__apiservice env var")
-	})
-}
 
-func Test_ParseFile_NonexistentFile(t *testing.T) {
-	_, err := ParseFile("./testdata/nonexistent.bicep")
-	require.Error(t, err)
+		_, hasEnvName := paramsByName["environmentName"]
+		assert.True(t, hasEnvName, "should have environmentName param")
+	})
 }

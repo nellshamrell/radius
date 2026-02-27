@@ -21,7 +21,7 @@ resource app 'Radius.Core/applications@2025-08-01-preview' = {
   }
 }
 {{ range .App.Containers }}
-resource {{ .Name }} 'Radius.Compute/containers@2025-08-01-preview' = {
+resource {{ .Name }} 'Applications.Core/containers@2023-10-01-preview' = {
   name: '{{ .Name }}'
   properties: {
     application: app.id
@@ -41,8 +41,8 @@ resource {{ .Name }} 'Radius.Compute/containers@2025-08-01-preview' = {
       }
 {{- if .EnvVars }}
       env: {
-{{- range $key, $value := sortedEnvVars .EnvVars }}
-        {{ $key }}: '{{ $value }}'
+{{- range sortedEnvVars .EnvVars }}
+        {{ .Key }}: '{{ .Value }}'
 {{- end }}
       }
 {{- end }}
