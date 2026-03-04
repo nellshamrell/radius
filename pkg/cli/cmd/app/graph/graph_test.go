@@ -586,3 +586,116 @@ func Test_Run_FileMode_JSON_Schema(t *testing.T) {
 		require.Empty(t, r.OutputResources)
 	}
 }
+
+func Test_Run_FileMode_Dot(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	template := loadFixtureTemplate(t, "simple-app.json")
+
+	mockBicep := bicep.NewMockInterface(ctrl)
+	mockBicep.EXPECT().
+		PrepareTemplate("testdata/simple-app.json").
+		Return(template, nil).
+		Times(1)
+
+	outputSink := &output.MockOutput{}
+	runner := &Runner{
+		Output:      outputSink,
+		BicepClient: mockBicep,
+		FilePath:    "testdata/simple-app.json",
+		Format:      output.FormatDot,
+	}
+
+	err := runner.Run(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, outputSink.Writes, 1)
+	logOutput, ok := outputSink.Writes[0].(output.LogOutput)
+	require.True(t, ok, "expected LogOutput but got %T", outputSink.Writes[0])
+
+	// Verify valid DOT digraph structure
+	require.Contains(t, logOutput.Format, "digraph")
+	require.Contains(t, logOutput.Format, "->")
+	require.Contains(t, logOutput.Format, "rankdir=LR")
+
+	// Verify resource names and types appear
+	require.Contains(t, logOutput.Format, "frontend")
+	require.Contains(t, logOutput.Format, "backend")
+	require.Contains(t, logOutput.Format, "Applications.Core/containers")
+}
+
+func Test_Run_Dot(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	graph := corerpv20231001preview.ApplicationGraphResponse{
+		Resources: []*corerpv20231001preview.ApplicationGraphResource{
+			{
+				ID:                to.Ptr(containerResourceID),
+				Name:              to.Ptr(containerResourceName),
+				Type:              to.Ptr(containerResourceType),
+				ProvisioningState: to.Ptr(provisioningStateSuccess),
+				OutputResources:   []*corerpv20231001preview.ApplicationGraphOutputResource{},
+				Connections: []*corerpv20231001preview.ApplicationGraphConnection{
+					{
+						ID:        to.Ptr(redisResourceID),
+						Direction: &directionOutbound,
+					},
+				},
+			},
+			{
+				ID:                to.Ptr(redisResourceID),
+				Name:              to.Ptr(redisResourceName),
+				Type:              to.Ptr(redisResourceType),
+				ProvisioningState: to.Ptr(provisioningStateSuccess),
+				OutputResources:   []*corerpv20231001preview.ApplicationGraphOutputResource{},
+				Connections: []*corerpv20231001preview.ApplicationGraphConnection{
+					{
+						ID:        to.Ptr(containerResourceID),
+						Direction: &directionInbound,
+					},
+				},
+			},
+		},
+	}
+
+	appManagementClient := clients.NewMockApplicationsManagementClient(ctrl)
+	appManagementClient.EXPECT().
+		GetApplicationGraph(gomock.Any(), "test-app").
+		Return(graph, nil).
+		Times(1)
+
+	workspace := &workspaces.Workspace{
+		Connection: map[string]any{
+			"kind":    "kubernetes",
+			"context": "kind-kind",
+		},
+		Name:  "kind-kind",
+		Scope: "/planes/radius/local/resourceGroups/test-group",
+	}
+	outputSink := &output.MockOutput{}
+	runner := &Runner{
+		ConnectionFactory: &connections.MockFactory{ApplicationsManagementClient: appManagementClient},
+		Workspace:         workspace,
+		Output:            outputSink,
+		Format:            output.FormatDot,
+
+		// Populated by Validate()
+		ApplicationName: "test-app",
+	}
+
+	err := runner.Run(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, outputSink.Writes, 1)
+	logOutput, ok := outputSink.Writes[0].(output.LogOutput)
+	require.True(t, ok, "expected LogOutput but got %T", outputSink.Writes[0])
+
+	// Verify valid DOT digraph structure
+	require.Contains(t, logOutput.Format, `digraph "test-app"`)
+	require.Contains(t, logOutput.Format, containerResourceName)
+	require.Contains(t, logOutput.Format, redisResourceName)
+	require.Contains(t, logOutput.Format, "->")
+	require.Contains(t, logOutput.Format, "rankdir=LR")
+}

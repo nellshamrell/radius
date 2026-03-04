@@ -179,6 +179,10 @@ func (r *Runner) runFileMode(ctx context.Context) error {
 	switch r.Format {
 	case output.FormatJson:
 		return r.Output.WriteFormatted(r.Format, response, output.FormatterOptions{})
+	case output.FormatDot:
+		d := displayDot(response.Resources, appName)
+		r.Output.LogInfo(d)
+		return nil
 	default:
 		d := display(response.Resources, appName)
 		r.Output.LogInfo(d)
@@ -201,6 +205,10 @@ func (r *Runner) runLiveMode(ctx context.Context) error {
 	switch r.Format {
 	case output.FormatJson:
 		return r.Output.WriteFormatted(r.Format, applicationGraphResponse, output.FormatterOptions{})
+	case output.FormatDot:
+		d := displayDot(applicationGraphResponse.Resources, r.ApplicationName)
+		r.Output.LogInfo(d)
+		return nil
 	default:
 		graph := applicationGraphResponse.Resources
 		d := display(graph, r.ApplicationName)

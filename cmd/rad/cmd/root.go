@@ -163,10 +163,10 @@ func prettyPrintJSON(o any) (string, error) {
 // handlePanic is the global panic recovery handler that formats and displays panic information
 func handlePanic() {
 	if r := recover(); r != nil {
-		fmt.Printf("Error: An unexpected internal error occurred: %v\n\n", r)
-		fmt.Println(string(debug.Stack()))
-		fmt.Println("\nPlease report this issue at https://github.com/radius-project/radius/issues")
-		fmt.Println("") // Output an extra blank line for readability
+		fmt.Fprintf(os.Stderr, "Error: An unexpected internal error occurred: %v\n\n", r)
+		fmt.Fprintln(os.Stderr, string(debug.Stack()))
+		fmt.Fprintln(os.Stderr, "\nPlease report this issue at https://github.com/radius-project/radius/issues")
+		fmt.Fprintln(os.Stderr, "") // Output an extra blank line for readability
 	}
 }
 
@@ -180,7 +180,7 @@ func Execute() error {
 
 	shutdown, err := initTracer()
 	if err != nil {
-		fmt.Println("Error:", err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		return err
 	}
 
@@ -197,8 +197,8 @@ func Execute() error {
 	defer span.End()
 	err = RootCmd.ExecuteContext(ctx)
 	if clierrors.IsFriendlyError(err) {
-		fmt.Println(err.Error())
-		fmt.Println("") // Output an extra blank line for readability
+		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(os.Stderr, "") // Output an extra blank line for readability
 		return err
 	} else if err != nil {
 		errText := prettyPrintRPError(err)
@@ -208,9 +208,9 @@ func Execute() error {
 		// from potentially corrupting the terminal.
 		errText = stripansi.Strip(errText)
 
-		fmt.Println("Error:", errText)
-		fmt.Println("\nTraceId: ", span.SpanContext().TraceID().String())
-		fmt.Println("") // Output an extra blank line for readability
+		fmt.Fprintln(os.Stderr, "Error:", errText)
+		fmt.Fprintln(os.Stderr, "\nTraceId: ", span.SpanContext().TraceID().String())
+		fmt.Fprintln(os.Stderr, "") // Output an extra blank line for readability
 		return err
 	}
 
@@ -251,7 +251,7 @@ func initSubCommands() {
 	framework := &framework.Impl{
 		Bicep: &bicep.Impl{
 			FileSystem: filesystem.OSFileSystem{},
-			Output:     &output.OutputWriter{Writer: RootCmd.OutOrStdout()},
+			Output:     &output.OutputWriter{Writer: RootCmd.ErrOrStderr()},
 		},
 		ConnectionFactory: connections.DefaultFactory,
 		ConfigHolder:      ConfigHolder,
