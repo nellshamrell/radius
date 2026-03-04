@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.1-experimental",
+  "parameters": {},
+  "imports": {
+    "Radius": {
+      "provider": "Radius",
+      "version": "latest"
+    }
+  },
+  "resources": {
+    "app": {
+      "import": "Radius",
+      "type": "Applications.Core/applications@2023-10-01-preview",
+      "properties": {
+        "name": "myapp",
+        "properties": {
+          "environment": "/planes/radius/local/resourceGroups/default/providers/Applications.Core/environments/default"
+        }
+      }
+    },
+    "frontend": {
+      "import": "Radius",
+      "type": "Applications.Core/containers@2023-10-01-preview",
+      "properties": {
+        "name": "frontend",
+        "properties": {
+          "application": "[reference('app').id]",
+          "container": {
+            "image": "ghcr.io/myorg/frontend:latest"
+          }
+        }
+      },
+      "dependsOn": [
+        "app",
+        "sharedModule"
+      ]
+    },
+    "sharedModule": {
+      "type": "Microsoft.Resources/deployments@2022-09-01",
+      "properties": {
+        "name": "shared-infra",
+        "properties": {
+          "mode": "Incremental",
+          "template": {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+            "resources": []
+          }
+        }
+      }
+    }
+  }
+}

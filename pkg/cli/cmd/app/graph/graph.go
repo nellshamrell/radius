@@ -7,8 +7,11 @@ package graph
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/radius-project/radius/pkg/cli"
+	"github.com/radius-project/radius/pkg/cli/bicep"
 	"github.com/radius-project/radius/pkg/cli/clients"
 	"github.com/radius-project/radius/pkg/cli/clierrors"
 	"github.com/radius-project/radius/pkg/cli/cmd/commonflags"
@@ -16,6 +19,7 @@ import (
 	"github.com/radius-project/radius/pkg/cli/framework"
 	"github.com/radius-project/radius/pkg/cli/output"
 	"github.com/radius-project/radius/pkg/cli/workspaces"
+	"github.com/radius-project/radius/pkg/corerp/frontend/controller/applications"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +36,16 @@ func NewCommand(factory framework.Factory) (*cobra.Command, framework.Runner) {
 rad app graph
 
 # Show graph for specified application
-rad app graph my-application`,
+rad app graph my-application
+
+# Show graph from a Bicep file (offline, no Radius environment required)
+rad app graph --file app.bicep
+
+# Show graph from a Bicep file in JSON format
+rad app graph --file app.bicep --output json
+
+# Show graph from a Bicep file in Graphviz DOT format
+rad app graph --file app.bicep --output dot`,
 		RunE: framework.RunCommand(runner),
 	}
 
@@ -40,6 +53,7 @@ rad app graph my-application`,
 	commonflags.AddResourceGroupFlag(cmd)
 	commonflags.AddApplicationNameFlag(cmd)
 	commonflags.AddOutputFlag(cmd)
+	cmd.Flags().StringP("file", "f", "", "Path to a .bicep or .json file for offline graph generation")
 
 	return cmd, runner
 }
@@ -49,10 +63,12 @@ type Runner struct {
 	ConfigHolder      *framework.ConfigHolder
 	ConnectionFactory connections.Factory
 	Output            output.Interface
+	BicepClient       bicep.Interface
 
 	ApplicationName string
 	Format          string
 	Workspace       *workspaces.Workspace
+	FilePath        string
 }
 
 // NewRunner creates a new instance of the `rad app graph` runner.
@@ -61,11 +77,34 @@ func NewRunner(factory framework.Factory) *Runner {
 		ConfigHolder:      factory.GetConfigHolder(),
 		Output:            factory.GetOutput(),
 		ConnectionFactory: factory.GetConnectionFactory(),
+		BicepClient:       factory.GetBicep(),
 	}
 }
 
 // Validate runs validation for the `rad app graph` command.
 func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
+	r.FilePath, _ = cmd.Flags().GetString("file")
+
+	if r.FilePath != "" && len(args) > 0 {
+		return clierrors.Message("--file and application name are mutually exclusive")
+	}
+
+	if r.FilePath != "" {
+		// File mode: validate file exists, read output format, skip workspace/scope/application validation
+		if _, err := os.Stat(r.FilePath); err != nil {
+			return clierrors.Message("file not found: %s", r.FilePath)
+		}
+
+		format, err := cli.RequireOutput(cmd)
+		if err != nil {
+			return err
+		}
+		r.Format = format
+
+		return nil
+	}
+
+	// Live mode: existing validation
 	workspace, err := cli.RequireWorkspace(cmd, r.ConfigHolder.Config, r.ConfigHolder.DirectoryConfig)
 	if err != nil {
 		return err
@@ -106,6 +145,49 @@ func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
 
 // Run runs the `rad app graph` command.
 func (r *Runner) Run(ctx context.Context) error {
+	if r.FilePath != "" {
+		return r.runFileMode(ctx)
+	}
+
+	return r.runLiveMode(ctx)
+}
+
+// runFileMode executes the graph command in file mode, compiling a Bicep/JSON file and
+// producing the application graph without requiring a Radius control plane.
+func (r *Runner) runFileMode(ctx context.Context) error {
+	template, err := r.BicepClient.PrepareTemplate(r.FilePath)
+	if err != nil {
+		return err
+	}
+
+	resources, warnings, err := extractResourcesFromTemplate(template)
+	if err != nil {
+		return err
+	}
+
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "Warning:", w)
+	}
+
+	appName, appResources, err := scopeToApplication(resources)
+	if err != nil {
+		return err
+	}
+
+	response := applications.ComputeGraph(appResources, nil)
+
+	switch r.Format {
+	case output.FormatJson:
+		return r.Output.WriteFormatted(r.Format, response, output.FormatterOptions{})
+	default:
+		d := display(response.Resources, appName)
+		r.Output.LogInfo(d)
+		return nil
+	}
+}
+
+// runLiveMode executes the graph command in live mode, querying the Radius control plane.
+func (r *Runner) runLiveMode(ctx context.Context) error {
 	client, err := r.ConnectionFactory.CreateApplicationsManagementClient(ctx, *r.Workspace)
 	if err != nil {
 		return err

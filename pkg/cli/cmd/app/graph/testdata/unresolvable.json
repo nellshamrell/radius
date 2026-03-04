@@ -1,0 +1,73 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.1-experimental",
+  "parameters": {
+    "redisConnectionString": {
+      "type": "string"
+    }
+  },
+  "imports": {
+    "Radius": {
+      "provider": "Radius",
+      "version": "latest"
+    }
+  },
+  "resources": {
+    "app": {
+      "import": "Radius",
+      "type": "Applications.Core/applications@2023-10-01-preview",
+      "properties": {
+        "name": "myapp",
+        "properties": {
+          "environment": "/planes/radius/local/resourceGroups/default/providers/Applications.Core/environments/default"
+        }
+      }
+    },
+    "frontend": {
+      "import": "Radius",
+      "type": "Applications.Core/containers@2023-10-01-preview",
+      "properties": {
+        "name": "frontend",
+        "properties": {
+          "application": "[reference('app').id]",
+          "connections": {
+            "backend": {
+              "source": "[reference('backend').id]"
+            },
+            "redis": {
+              "source": "[parameters('redisConnectionString')]"
+            }
+          },
+          "container": {
+            "image": "ghcr.io/myorg/frontend:latest"
+          }
+        }
+      },
+      "dependsOn": [
+        "app",
+        "backend"
+      ]
+    },
+    "backend": {
+      "import": "Radius",
+      "type": "Applications.Core/containers@2023-10-01-preview",
+      "properties": {
+        "name": "backend",
+        "properties": {
+          "application": "[reference('app').id]",
+          "connections": {
+            "cache": {
+              "source": "[format('{0}.redis.cache.windows.net', parameters('redisConnectionString'))]"
+            }
+          },
+          "container": {
+            "image": "ghcr.io/myorg/backend:latest"
+          }
+        }
+      },
+      "dependsOn": [
+        "app"
+      ]
+    }
+  }
+}

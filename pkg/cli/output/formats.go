@@ -20,6 +20,7 @@ const (
 	FormatJson      = "json"
 	FormatTable     = "table"
 	FormatPlainText = "plain-text"
+	FormatDot       = "dot"
 	DefaultFormat   = FormatTable
 )
 
@@ -32,11 +33,12 @@ func SupportedFormats() []string {
 }
 
 // AllFormats returns all recognized output format strings, including formats
-// that are only available for specific commands (e.g., plain-text).
+// that are only available for specific commands (e.g., plain-text, dot).
 func AllFormats() []string {
 	return []string{
 		FormatJson,
 		FormatTable,
 		FormatPlainText,
+		FormatDot,
 	}
 }

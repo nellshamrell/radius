@@ -242,13 +242,13 @@ func isResourceInEnvironment(resource generated.GenericResource, environmentName
 	return false
 }
 
-// computeGraph constructs an application graph from the given application and environment resources.
+// ComputeGraph constructs an application graph from the given application and environment resources.
 //
 // This function does not return errors and will ignore missing or corrupted data. It is expected that the caller
-// will display the results to a human user, so rather than failing to computeGraph the graph, we will return partial
+// will display the results to a human user, so rather than failing to compute the graph, we will return partial
 // results. Each ApplicationGraphResource will have a provisioning state that indicates whether the resource
 // was successfully processed or not.
-func computeGraph(applicationResources []generated.GenericResource, environmentResources []generated.GenericResource) *corerpv20231001preview.ApplicationGraphResponse {
+func ComputeGraph(applicationResources []generated.GenericResource, environmentResources []generated.GenericResource) *corerpv20231001preview.ApplicationGraphResponse {
 	if applicationResources == nil && environmentResources == nil {
 		return &corerpv20231001preview.ApplicationGraphResponse{Resources: []*corerpv20231001preview.ApplicationGraphResource{}}
 	}
