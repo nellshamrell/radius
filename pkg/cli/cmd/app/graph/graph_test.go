@@ -287,6 +287,77 @@ func loadFixtureTemplate(t *testing.T, name string) map[string]any {
 	return template
 }
 
+// Test_Validate_FileMode_MutualExclusivity_ErrorMessage verifies that providing both --file
+// and a positional application name produces the exact error message defined in US2.
+func Test_Validate_FileMode_MutualExclusivity_ErrorMessage(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	configWithWorkspace := radcli.LoadConfigWithWorkspace(t)
+
+	f := &framework.Impl{
+		ConfigHolder: &framework.ConfigHolder{
+			ConfigFilePath: "",
+			Config:         configWithWorkspace,
+		},
+		Output: &output.MockOutput{},
+		Bicep:  bicep.NewMockInterface(ctrl),
+	}
+
+	cmd, runner := NewCommand(f)
+	cmd.SetArgs([]string{"test-app", "--file", "testdata/simple-app.json"})
+	cmd.SetContext(context.Background())
+
+	err := cmd.ParseFlags([]string{"test-app", "--file", "testdata/simple-app.json"})
+	require.NoError(t, err)
+
+	err = runner.Validate(cmd, cmd.Flags().Args())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--file and application name are mutually exclusive")
+}
+
+// Test_Validate_PositionalOnly_LiveModePath verifies that providing only a positional
+// application name (no --file) follows the existing live-mode validation path unchanged.
+// This is the US2 non-conflict acceptance scenario.
+func Test_Validate_PositionalOnly_LiveModePath(t *testing.T) {
+	application := corerpv20231001preview.ApplicationResource{
+		Name: to.Ptr("test-app"),
+		ID:   to.Ptr(applicationResourceID),
+		Type: to.Ptr("Applications.Core/applications"),
+		Properties: &corerpv20231001preview.ApplicationProperties{
+			Environment: to.Ptr(environmentResourceID),
+		},
+	}
+
+	configWithWorkspace := radcli.LoadConfigWithWorkspace(t)
+	testcases := []radcli.ValidateInput{
+		{
+			Name:          "Positional app name only - live mode path (US2 non-conflict)",
+			Input:         []string{"test-app"},
+			ExpectedValid: true,
+			ConfigHolder: framework.ConfigHolder{
+				ConfigFilePath: "",
+				Config:         configWithWorkspace,
+			},
+			ConfigureMocks: func(mocks radcli.ValidateMocks) {
+				mocks.ApplicationManagementClient.EXPECT().
+					GetApplication(gomock.Any(), "test-app").
+					Return(application, nil).
+					Times(1)
+			},
+			ValidateCallback: func(t *testing.T, r framework.Runner) {
+				runner := r.(*Runner)
+				// Verify live-mode fields are populated
+				require.Equal(t, "test-app", runner.ApplicationName)
+				require.NotNil(t, runner.Workspace)
+				// Verify file-mode field is NOT populated
+				require.Empty(t, runner.FilePath)
+			},
+		},
+	}
+	radcli.SharedValidateValidation(t, NewCommand, testcases)
+}
+
 func Test_Run_FileMode_SimpleApp(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -623,6 +694,73 @@ func Test_Run_FileMode_Dot(t *testing.T) {
 	require.Contains(t, logOutput.Format, "frontend")
 	require.Contains(t, logOutput.Format, "backend")
 	require.Contains(t, logOutput.Format, "Applications.Core/containers")
+}
+
+// Test_Run_FileMode_Dot_NonRadius verifies that non-Radius resources in DOT output
+// use shape=ellipse and fillcolor=lightyellow (US6, T025).
+func Test_Run_FileMode_Dot_NonRadius(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// Create a template with mixed Radius and non-Radius resources, but no application
+	// resource so scopeToApplication includes all resources in the implicit app.
+	template := map[string]any{
+		"resources": map[string]any{
+			"frontend": map[string]any{
+				"import": "Radius",
+				"type":   "Applications.Core/containers@2023-10-01-preview",
+				"properties": map[string]any{
+					"name":       "frontend",
+					"properties": map[string]any{},
+				},
+			},
+			"storageAccount": map[string]any{
+				"type": "Microsoft.Storage/storageAccounts@2021-02-01",
+				"properties": map[string]any{
+					"name":       "mystorage",
+					"properties": map[string]any{},
+				},
+			},
+		},
+	}
+
+	mockBicep := bicep.NewMockInterface(ctrl)
+	mockBicep.EXPECT().
+		PrepareTemplate("testdata/non-radius.json").
+		Return(template, nil).
+		Times(1)
+
+	outputSink := &output.MockOutput{}
+	runner := &Runner{
+		Output:      outputSink,
+		BicepClient: mockBicep,
+		FilePath:    "testdata/non-radius.json",
+		Format:      output.FormatDot,
+	}
+
+	err := runner.Run(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, outputSink.Writes, 1)
+	logOutput, ok := outputSink.Writes[0].(output.LogOutput)
+	require.True(t, ok, "expected LogOutput but got %T", outputSink.Writes[0])
+
+	dot := logOutput.Format
+
+	// Verify valid DOT structure
+	require.Contains(t, dot, "digraph")
+	require.Contains(t, dot, "rankdir=LR")
+
+	// Non-Radius resource (Microsoft.Storage/storageAccounts) should use ellipse and lightyellow
+	require.Contains(t, dot, "shape=ellipse")
+	require.Contains(t, dot, "fillcolor=lightyellow")
+	require.Contains(t, dot, "mystorage")
+	require.Contains(t, dot, "Microsoft.Storage/storageAccounts")
+
+	// Radius resources should use box and lightblue
+	require.Contains(t, dot, "shape=box")
+	require.Contains(t, dot, "fillcolor=lightblue")
+	require.Contains(t, dot, "frontend")
 }
 
 func Test_Run_Dot(t *testing.T) {

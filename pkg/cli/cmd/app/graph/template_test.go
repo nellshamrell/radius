@@ -432,6 +432,221 @@ func Test_scopeToApplication_multipleApps(t *testing.T) {
 	require.Contains(t, err.Error(), "multiple applications")
 }
 
+// T014 [US3] — Unresolvable expression handling: parameters expression → warning + connection skipped
+func Test_extractResourcesFromTemplate_unresolvable_parametersSkipped(t *testing.T) {
+	template := loadTestFixture(t, "unresolvable.json")
+
+	resources, warnings, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+
+	// The frontend has a "redis" connection with [parameters('redisConnectionString')]
+	// which should be skipped with a warning
+	hasParamWarning := false
+	for _, w := range warnings {
+		if contains(w, "parameters(") && contains(w, "frontend") {
+			hasParamWarning = true
+			break
+		}
+	}
+	require.True(t, hasParamWarning, "expected warning about unresolvable parameters expression for frontend, got: %v", warnings)
+
+	// The redis connection should NOT appear in frontend's resolved connections
+	for _, r := range resources {
+		if to.String(r.Name) == "frontend" {
+			conns, ok := r.Properties["connections"].(map[string]any)
+			if ok {
+				_, hasRedis := conns["redis"]
+				require.False(t, hasRedis, "redis connection with parameters expression should have been skipped")
+			}
+		}
+	}
+}
+
+// T014 [US3] — Unresolvable expression handling: format expression → warning + connection skipped
+func Test_extractResourcesFromTemplate_unresolvable_formatSkipped(t *testing.T) {
+	template := loadTestFixture(t, "unresolvable.json")
+
+	resources, warnings, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+
+	// The backend has a "cache" connection with [format(...)] which should be skipped
+	hasFormatWarning := false
+	for _, w := range warnings {
+		if contains(w, "format(") && contains(w, "backend") {
+			hasFormatWarning = true
+			break
+		}
+	}
+	require.True(t, hasFormatWarning, "expected warning about unresolvable format expression for backend, got: %v", warnings)
+
+	// The cache connection should NOT appear in backend's resolved connections
+	for _, r := range resources {
+		if to.String(r.Name) == "backend" {
+			conns, ok := r.Properties["connections"].(map[string]any)
+			if ok {
+				_, hasCache := conns["cache"]
+				require.False(t, hasCache, "cache connection with format expression should have been skipped")
+			}
+		}
+	}
+}
+
+// T014 [US3] — Partially resolvable template: some connections resolve, some don't → partial results + warnings
+func Test_extractResourcesFromTemplate_unresolvable_partialResolution(t *testing.T) {
+	template := loadTestFixture(t, "unresolvable.json")
+
+	resources, warnings, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+
+	// Should have warnings (some things couldn't be resolved)
+	require.NotEmpty(t, warnings, "expected warnings for unresolvable expressions")
+
+	// Should still have resources (partial extraction succeeded)
+	require.NotEmpty(t, resources)
+
+	// The frontend's "backend" connection via [reference('backend').id] should resolve
+	for _, r := range resources {
+		if to.String(r.Name) == "frontend" {
+			conns, ok := r.Properties["connections"].(map[string]any)
+			require.True(t, ok, "frontend should have connections (at least the resolvable one)")
+			backendConn, hasBackend := conns["backend"]
+			require.True(t, hasBackend, "frontend should have resolvable 'backend' connection")
+			backendMap, ok := backendConn.(map[string]any)
+			require.True(t, ok)
+			require.Equal(t,
+				"/planes/radius/local/resourceGroups/default/providers/Applications.Core/containers/backend",
+				backendMap["source"])
+		}
+	}
+}
+
+// T015 [US3] — Conditional resource: resource with condition field → included in output + warning
+func Test_extractResourcesFromTemplate_conditionalResource_includedWithWarning(t *testing.T) {
+	template := map[string]any{
+		"resources": map[string]any{
+			"condCache": map[string]any{
+				"import":    "Radius",
+				"type":      "Applications.Datastores/redisCaches@2023-10-01-preview",
+				"condition": "[parameters('enableCache')]",
+				"properties": map[string]any{
+					"name":       "my-redis",
+					"properties": map[string]any{},
+				},
+			},
+			"alwaysOn": map[string]any{
+				"import": "Radius",
+				"type":   "Applications.Core/containers@2023-10-01-preview",
+				"properties": map[string]any{
+					"name":       "worker",
+					"properties": map[string]any{},
+				},
+			},
+		},
+	}
+
+	resources, warnings, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+
+	// Both resources should be included
+	require.Len(t, resources, 2)
+
+	// Only the conditional one should have a warning
+	hasConditionWarning := false
+	for _, w := range warnings {
+		if contains(w, "condition") && contains(w, "my-redis") {
+			hasConditionWarning = true
+			break
+		}
+	}
+	require.True(t, hasConditionWarning, "expected condition warning for my-redis, got: %v", warnings)
+
+	// The non-conditional resource should NOT trigger a condition warning
+	for _, w := range warnings {
+		require.False(t, contains(w, "worker") && contains(w, "condition"),
+			"worker should not have a condition warning, got: %v", warnings)
+	}
+}
+
+// T015 [US3] — Module reference: Microsoft.Resources/deployments → warning about module not traversed
+func Test_extractResourcesFromTemplate_moduleReference_warning(t *testing.T) {
+	template := loadTestFixture(t, "with-modules.json")
+
+	resources, warnings, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+
+	// Module resource should still be in the output
+	hasModule := false
+	for _, r := range resources {
+		if to.String(r.Type) == "Microsoft.Resources/deployments" {
+			hasModule = true
+			break
+		}
+	}
+	require.True(t, hasModule, "module resource should be included in output")
+
+	// Should have a warning containing "module reference" and the module name
+	hasModuleWarning := false
+	for _, w := range warnings {
+		if contains(w, "module reference") && contains(w, "shared-infra") {
+			hasModuleWarning = true
+			break
+		}
+	}
+	require.True(t, hasModuleWarning, "expected module warning mentioning 'module reference' and 'shared-infra', got: %v", warnings)
+}
+
+// T019 [US5] — scopeToApplication edge cases: 0 apps → all resources with empty app name
+func Test_scopeToApplication_zeroApps_returnsAllResources(t *testing.T) {
+	template := loadTestFixture(t, "no-app.json")
+
+	resources, _, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+	require.NotEmpty(t, resources)
+
+	appName, filtered, err := scopeToApplication(resources)
+	require.NoError(t, err)
+	require.Equal(t, "", appName, "app name should be empty for 0 application resources")
+	require.Equal(t, len(resources), len(filtered), "all resources should be returned when no application resource exists")
+	require.Equal(t, resources, filtered)
+}
+
+// T019 [US5] — scopeToApplication edge cases: 1 app → filtered resources with app name
+func Test_scopeToApplication_oneApp_returnsFilteredResources(t *testing.T) {
+	template := loadTestFixture(t, "simple-app.json")
+
+	resources, _, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+
+	appName, filtered, err := scopeToApplication(resources)
+	require.NoError(t, err)
+	require.Equal(t, "myapp", appName, "should return the application name")
+	require.NotEmpty(t, filtered)
+
+	// All filtered resources should either be the app itself or reference the app
+	appID := "/planes/radius/local/resourceGroups/default/providers/Applications.Core/applications/myapp"
+	for _, r := range filtered {
+		resType := to.String(r.Type)
+		if isApplicationType(resType) {
+			continue // the app itself
+		}
+		appRef, ok := r.Properties["application"]
+		require.True(t, ok, "non-application resource %q should reference the application", to.String(r.Name))
+		require.Equal(t, appID, appRef, "resource %q should reference the correct application", to.String(r.Name))
+	}
+}
+
+// T019 [US5] — scopeToApplication edge cases: 2 apps → error mentioning multiple applications
+func Test_scopeToApplication_twoApps_returnsError(t *testing.T) {
+	template := loadTestFixture(t, "multi-app.json")
+
+	resources, _, err := extractResourcesFromTemplate(template)
+	require.NoError(t, err)
+
+	_, _, err = scopeToApplication(resources)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "multiple applications")
+}
+
 // contains is a test helper for substring matching.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
