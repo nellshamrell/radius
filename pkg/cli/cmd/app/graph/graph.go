@@ -45,7 +45,19 @@ rad app graph --file app.bicep
 rad app graph --file app.bicep --output json
 
 # Show graph from a Bicep file in Graphviz DOT format
-rad app graph --file app.bicep --output dot`,
+rad app graph --file app.bicep --output dot
+
+# Show graph from an Aspire AppHost project (offline, no Radius environment or .NET SDK required)
+rad app graph --from-aspire ./AspireApp.AppHost
+
+# Show graph from an Aspire AppHost .csproj file
+rad app graph --from-aspire ./AspireApp.AppHost/AspireApp.AppHost.csproj
+
+# Show graph from an Aspire AppHost in JSON format
+rad app graph --from-aspire ./AspireApp.AppHost --output json
+
+# Show graph from an Aspire AppHost in Graphviz DOT format
+rad app graph --from-aspire ./AspireApp.AppHost --output dot`,
 		RunE: framework.RunCommand(runner),
 	}
 
@@ -54,6 +66,7 @@ rad app graph --file app.bicep --output dot`,
 	commonflags.AddApplicationNameFlag(cmd)
 	commonflags.AddOutputFlag(cmd)
 	cmd.Flags().StringP("file", "f", "", "Path to a .bicep or .json file for offline graph generation")
+	cmd.Flags().String("from-aspire", "", "Path to a .NET Aspire AppHost project directory or .csproj file for offline graph generation")
 
 	return cmd, runner
 }
@@ -69,6 +82,7 @@ type Runner struct {
 	Format          string
 	Workspace       *workspaces.Workspace
 	FilePath        string
+	AspirePath      string
 }
 
 // NewRunner creates a new instance of the `rad app graph` runner.
@@ -84,9 +98,36 @@ func NewRunner(factory framework.Factory) *Runner {
 // Validate runs validation for the `rad app graph` command.
 func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
 	r.FilePath, _ = cmd.Flags().GetString("file")
+	r.AspirePath, _ = cmd.Flags().GetString("from-aspire")
 
-	if r.FilePath != "" && len(args) > 0 {
-		return clierrors.Message("--file and application name are mutually exclusive")
+	// Three-way mutual exclusivity check: --from-aspire, --file, and positional app name
+	modeCount := 0
+	if r.FilePath != "" {
+		modeCount++
+	}
+	if r.AspirePath != "" {
+		modeCount++
+	}
+	if len(args) > 0 {
+		modeCount++
+	}
+	if modeCount > 1 {
+		return clierrors.Message("--from-aspire, --file, and application name are mutually exclusive")
+	}
+
+	if r.AspirePath != "" {
+		// Aspire mode: validate path exists, read output format, skip workspace/scope/app validation
+		if _, err := os.Stat(r.AspirePath); err != nil {
+			return clierrors.Message("path not found: %s", r.AspirePath)
+		}
+
+		format, err := cli.RequireOutput(cmd)
+		if err != nil {
+			return err
+		}
+		r.Format = format
+
+		return nil
 	}
 
 	if r.FilePath != "" {
@@ -145,11 +186,66 @@ func (r *Runner) Validate(cmd *cobra.Command, args []string) error {
 
 // Run runs the `rad app graph` command.
 func (r *Runner) Run(ctx context.Context) error {
+	if r.AspirePath != "" {
+		return r.runAspireMode(ctx)
+	}
+
 	if r.FilePath != "" {
 		return r.runFileMode(ctx)
 	}
 
 	return r.runLiveMode(ctx)
+}
+
+// runAspireMode executes the graph command in Aspire mode, parsing a .NET Aspire AppHost
+// project's C# source to extract the application topology and produce the graph without
+// requiring a Radius environment or .NET SDK.
+func (r *Runner) runAspireMode(ctx context.Context) error {
+	projectDir, csprojPath, err := discoverAppHostProject(r.AspirePath)
+	if err != nil {
+		return clierrors.Message("%s", err.Error())
+	}
+
+	entryPointFile, err := findEntryPointFile(projectDir)
+	if err != nil {
+		return clierrors.Message("%s", err.Error())
+	}
+
+	content, err := os.ReadFile(entryPointFile)
+	if err != nil {
+		return fmt.Errorf("failed to read entry point file: %w", err)
+	}
+
+	resources, connections, warnings, err := parseAspireAppHost(string(content))
+	if err != nil {
+		return err
+	}
+
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
+
+	genericResources, err := aspireResourcesToGenericResources(resources, connections)
+	if err != nil {
+		return err
+	}
+
+	appName := deriveApplicationName(r.AspirePath, projectDir, csprojPath)
+
+	response := applications.ComputeGraph(genericResources, nil)
+
+	switch r.Format {
+	case output.FormatJson:
+		return r.Output.WriteFormatted(r.Format, response, output.FormatterOptions{})
+	case output.FormatDot:
+		d := displayDot(response.Resources, appName)
+		r.Output.LogInfo(d)
+		return nil
+	default:
+		d := display(response.Resources, appName)
+		r.Output.LogInfo(d)
+		return nil
+	}
 }
 
 // runFileMode executes the graph command in file mode, compiling a Bicep/JSON file and

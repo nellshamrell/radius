@@ -313,7 +313,7 @@ func Test_Validate_FileMode_MutualExclusivity_ErrorMessage(t *testing.T) {
 
 	err = runner.Validate(cmd, cmd.Flags().Args())
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "--file and application name are mutually exclusive")
+	require.Contains(t, err.Error(), "--from-aspire, --file, and application name are mutually exclusive")
 }
 
 // Test_Validate_PositionalOnly_LiveModePath verifies that providing only a positional
@@ -836,4 +836,75 @@ func Test_Run_Dot(t *testing.T) {
 	require.Contains(t, logOutput.Format, redisResourceName)
 	require.Contains(t, logOutput.Format, "->")
 	require.Contains(t, logOutput.Format, "rankdir=LR")
+}
+
+// T026: Integration test for Aspire mode text output using simple-apphost fixture.
+func Test_Run_AspireMode_Text(t *testing.T) {
+	outputSink := &output.MockOutput{}
+	runner := &Runner{
+		Output:     outputSink,
+		AspirePath: "testdata/aspire/simple-apphost",
+		// No Workspace, no ConnectionFactory — proves offline operation
+	}
+
+	err := runner.Run(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, outputSink.Writes, 1)
+	logOutput, ok := outputSink.Writes[0].(output.LogOutput)
+	require.True(t, ok, "expected LogOutput but got %T", outputSink.Writes[0])
+
+	text := logOutput.Format
+
+	// Verify application name is derived from project name (simpleapphost)
+	require.Contains(t, text, "Displaying application: simpleapphost")
+
+	// Verify all 5 resources appear: webfrontend, apiservice, cache, sqlserver, weatherdb
+	require.Contains(t, text, "webfrontend")
+	require.Contains(t, text, "apiservice")
+	require.Contains(t, text, "cache")
+	require.Contains(t, text, "sqlserver")
+	require.Contains(t, text, "weatherdb")
+
+	// Verify resource types are mapped correctly
+	require.Contains(t, text, "Applications.Core/containers")
+	require.Contains(t, text, "Applications.Datastores/redisCaches")
+	require.Contains(t, text, "Applications.Datastores/sqlDatabases")
+
+	// Verify connections are present (3 connections)
+	require.Contains(t, text, "->")
+
+	// Count arrow occurrences to verify at least 3 connections
+	arrowCount := strings.Count(text, "->")
+	require.GreaterOrEqual(t, arrowCount, 3, "expected at least 3 connections, got %d", arrowCount)
+}
+
+// T027: Integration test for Aspire mode with chained resources.
+func Test_Run_AspireMode_ChainedResources(t *testing.T) {
+	outputSink := &output.MockOutput{}
+	runner := &Runner{
+		Output:     outputSink,
+		AspirePath: "testdata/aspire/chained-apphost",
+		// No Workspace, no ConnectionFactory — proves offline operation
+	}
+
+	err := runner.Run(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, outputSink.Writes, 1)
+	logOutput, ok := outputSink.Writes[0].(output.LogOutput)
+	require.True(t, ok, "expected LogOutput but got %T", outputSink.Writes[0])
+
+	text := logOutput.Format
+
+	// Both sqlserver and weatherdb should appear as separate resources
+	require.Contains(t, text, "sqlserver")
+	require.Contains(t, text, "weatherdb")
+	require.Contains(t, text, "apiservice")
+
+	// apiservice should connect to weatherdb (fluent chain resolution:
+	// variable 'sqlserver' resolves to last Add* in chain = weatherdb)
+	require.Contains(t, text, "apiservice")
+	require.Contains(t, text, "->")
+	require.Contains(t, text, "weatherdb")
 }
