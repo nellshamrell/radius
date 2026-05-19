@@ -97,80 +97,102 @@ Requirements:
 - Use the GitHub REST API (`POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`) rather than `gh` CLI, because the API supports posting multiple inline comments in one review. See [GitHub docs](https://docs.github.com/en/rest/pulls/reviews?apiVersion=2022-11-28#create-a-review-for-a-pull-request).
 - Iterate over each comment in `pr-review-${prNumber}.md` and include it in the review payload.
 - Include an overall review body taken from the overall PR assessment section.
-- Properly escape characters in comment bodies to avoid JSON parsing errors (prefer `jq` for payload construction when possible).
-- Read `GITHUB_TOKEN` from the environment; fail fast with a clear error if it is unset.
-- Resolve the head commit SHA from the PR rather than relying on `HEAD`.
+- Use `jq` for both response parsing and request payload construction. Never build JSON by string interpolation, and never parse GitHub API responses with `grep`/`sed` — the PR response contains multiple `"sha":` fields and arbitrary field ordering.
+- Read `GITHUB_TOKEN` from the environment; fail fast with a clear error if it is unset. Fail fast with a clear error if `jq` is not installed.
+- Accept `PR_NUMBER` (and optionally `REPO_OWNER`/`REPO_NAME`) from environment variables so the same script can be re-run against a different PR without editing the file. Default `REPO_OWNER`/`REPO_NAME` to `radius-project`/`radius`.
+- Resolve the head commit SHA from the PR via `jq -r '.head.sha // empty'`, not `HEAD`.
 - Print success or failure messages with the review URL or response body.
 
 Reference script structure:
 
 ```bash
 #!/bin/bash
-
+#
 # GitHub PR Review Script
-# Creates a GitHub review with multiple inline comments using the GitHub API
+# Posts a review with multiple inline comments via the GitHub REST API.
+#
+# Usage:
+#   export GITHUB_TOKEN=<your_token>
+#   PR_NUMBER=1234 ./pr-review-1234.sh
+#
+# Required tools: curl, jq
 
-GITHUB_TOKEN="${GITHUB_TOKEN}"
-REPO_OWNER="radius-project"
-REPO_NAME="radius"
-PR_NUMBER=""   # Filled in by the skill
-COMMIT_SHA=""  # Resolved from the PR at runtime
+set -euo pipefail
 
-if [ -z "$GITHUB_TOKEN" ]; then
-    echo "Error: GITHUB_TOKEN environment variable is not set"
-    echo "Please set it with: export GITHUB_TOKEN=your_token_here"
+REPO_OWNER="${REPO_OWNER:-radius-project}"
+REPO_NAME="${REPO_NAME:-radius}"
+PR_NUMBER="${PR_NUMBER:-}"   # Override at runtime, or hard-code per PR
+
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+    echo "Error: GITHUB_TOKEN environment variable is not set" >&2
+    echo "Please set it with: export GITHUB_TOKEN=your_token_here" >&2
     exit 1
 fi
 
-create_review() {
-    curl -X POST \
-        -H "Accept: application/vnd.github+json" \
-        -H "Authorization: Bearer $GITHUB_TOKEN" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
-        "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/reviews" \
-        -d '{
-            "commit_id": "'"$COMMIT_SHA"'",
-            "body": "Overall assessment goes here.",
-            "event": "COMMENT",
-            "comments": [
-                {
-                    "path": "path/to/file.ext",
-                    "line": 1,
-                    "body": "Comment body (properly escaped)."
-                }
-            ]
-        }'
-}
+if [ -z "${PR_NUMBER}" ]; then
+    echo "Error: PR_NUMBER is not set" >&2
+    exit 1
+fi
 
-echo "Creating GitHub review for PR #$PR_NUMBER..."
-echo "Repository: $REPO_OWNER/$REPO_NAME"
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: jq is required but not installed" >&2
+    exit 1
+fi
 
-COMMIT_RESPONSE=$(curl -s \
+echo "Creating GitHub review for PR #${PR_NUMBER}..."
+echo "Repository: ${REPO_OWNER}/${REPO_NAME}"
+
+# Resolve the head commit SHA from the PR.
+PR_RESPONSE=$(curl -sS \
     -H "Accept: application/vnd.github+json" \
-    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
-    "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER")
+    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR_NUMBER}")
 
-COMMIT_SHA=$(echo "$COMMIT_RESPONSE" | grep -o '"sha": *"[^"]*"' | head -1 | sed 's/.*"sha": *"\([^"]*\)".*/\1/')
+COMMIT_SHA=$(echo "${PR_RESPONSE}" | jq -r '.head.sha // empty')
 
-if [ -z "$COMMIT_SHA" ]; then
-    echo "❌ Could not get commit SHA from PR response"
-    echo "Response: $COMMIT_RESPONSE"
+if [ -z "${COMMIT_SHA}" ]; then
+    echo "❌ Could not resolve head commit SHA from PR response" >&2
+    echo "Response: ${PR_RESPONSE}" >&2
     exit 1
 fi
 
-echo "Using commit SHA: $COMMIT_SHA"
+echo "Using commit SHA: ${COMMIT_SHA}"
 
-RESPONSE=$(create_review)
+REVIEW_BODY="Overall assessment goes here."
 
-if echo "$RESPONSE" | grep -q '"id"'; then
+# One object per inline comment. Use --arg to escape body text safely.
+COMMENTS_JSON=$(jq -n '
+[
+  {path: $p1, line: 1, body: $b1}
+]
+' \
+    --arg p1 "path/to/file.ext" \
+    --arg b1 "Comment body (jq handles escaping).")
+
+PAYLOAD=$(jq -n \
+    --arg commit_id "${COMMIT_SHA}" \
+    --arg body "${REVIEW_BODY}" \
+    --arg event "COMMENT" \
+    --argjson comments "${COMMENTS_JSON}" \
+    '{commit_id: $commit_id, body: $body, event: $event, comments: $comments}')
+
+RESPONSE=$(curl -sS -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR_NUMBER}/reviews" \
+    -d "${PAYLOAD}")
+
+REVIEW_ID=$(echo "${RESPONSE}" | jq -r '.id // empty')
+
+if [ -n "${REVIEW_ID}" ]; then
     echo "✅ Review created successfully!"
-    REVIEW_ID=$(echo "$RESPONSE" | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2)
-    echo "Review ID: $REVIEW_ID"
-    echo "Review URL: https://github.com/$REPO_OWNER/$REPO_NAME/pull/$PR_NUMBER"
+    echo "Review ID: ${REVIEW_ID}"
+    echo "Review URL: https://github.com/${REPO_OWNER}/${REPO_NAME}/pull/${PR_NUMBER}"
 else
-    echo "❌ Failed to create review"
-    echo "Response: $RESPONSE"
+    echo "❌ Failed to create review" >&2
+    echo "Response: ${RESPONSE}" >&2
     exit 1
 fi
 ```
@@ -205,7 +227,7 @@ Before finishing:
 - [ ] Analysis covers every changed file in the PR
 - [ ] Review comments are specific, actionable, and free of generic praise
 - [ ] All cited file paths and line numbers match the PR diff
-- [ ] Shell script passes `shellcheck` mentally — variables quoted, JSON properly escaped
+- [ ] Generated script passes `shellcheck -x` with no errors (variables quoted, JSON built via `jq`)
 - [ ] Script uses the resolved head commit SHA, not `HEAD`
 - [ ] Script was created but not executed
 - [ ] Contributor doc impact assessed via `contributing-docs-updater`
