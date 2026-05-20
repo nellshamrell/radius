@@ -16,6 +16,22 @@ Code reviews for Radius take place as part of the pull-request process. See the 
 
 Contributors and reviewers might communicate about a pull-request outside Github, for example on a video call or in chat. We encourage this when it is helpful, and we ask that contributors update Github with the important feedback and conclusions reached so that the information is visible to others.
 
+### Optional: AI-assisted review with the `radius-code-review` skill
+
+If you use GitHub Copilot (CLI or the VS Code extension), the repository ships an opinionated skill at [`.github/skills/radius-code-review/SKILL.md`](../../../../.github/skills/radius-code-review/SKILL.md) that produces a structured review for a given pull-request. The skill generates three artifacts under `.copilot-tracking/`:
+
+- `pr-analysis-<n>.md` — per-file analysis of the changes
+- `pr-review-<n>.md` — review comments and overall assessment
+- `pr-review-<n>.sh` — a shell script that posts the review via the GitHub REST API
+
+Invoke it from Copilot CLI with `/radius-code-review Review PR #<n>`, or from VS Code Copilot Chat via the matching `.github/prompts/radius.code-review.prompt.md` shim.
+
+Reviewer responsibilities still apply:
+
+- **You own the review.** AI-generated feedback is a starting point, not the final word. Read each comment, drop the ones that are wrong or low-value, and refine the rest before posting.
+- **Verify line numbers, paths, and claims against the actual diff.** The skill produces a script you can edit; do not run it blind.
+- The rest of this document (philosophy, what good feedback looks like, the code-review pyramid) applies equally whether your first draft came from the skill or from your own reading.
+
 ## Philosophy
 
 As maintainers we like the [code review pyramid](https://www.morling.dev/blog/the-code-review-pyramid/) as a guiding principle. 
