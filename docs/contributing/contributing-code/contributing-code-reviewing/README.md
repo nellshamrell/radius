@@ -24,9 +24,35 @@ If you use GitHub Copilot (CLI or the VS Code extension), the repository ships a
 - `pr-review-<n>.md` — review comments and overall assessment
 - `pr-review-<n>.sh` — a shell script that posts the review via the GitHub REST API
 
-Invoke it from Copilot CLI with `/radius-code-review Review PR #<n>`, or from VS Code Copilot Chat via the matching `.github/prompts/radius.code-review.prompt.md` shim.
+**Prerequisites**
 
-Reviewer responsibilities still apply:
+- Authenticated [`gh` CLI](https://cli.github.com/) (the skill uses it to fetch PR metadata and diffs).
+- [`jq`](https://jqlang.org/) installed locally (the generated posting script depends on it).
+- One of:
+  - [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-cli), or
+  - VS Code with the [GitHub Copilot Chat](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat) extension. Prompt files must be enabled — see VS Code's [prompt files documentation](https://code.visualstudio.com/docs/copilot/copilot-customization#_prompt-files-experimental).
+
+**From Copilot CLI**
+
+Run the CLI from the repository root, then in the chat session enter:
+
+```text
+/radius-code-review Review PR #<pr-number>
+```
+
+The skill is auto-discovered from `.github/skills/`. It will fetch the PR, analyze each changed file, and write the three artifacts to `.copilot-tracking/`.
+
+**From VS Code Copilot Chat**
+
+Open the Copilot Chat panel in the repository, then in the chat input type:
+
+```text
+/radius.code-review
+```
+
+VS Code will pick up `.github/prompts/radius.code-review.prompt.md` and prompt you for the PR number. That prompt is a thin shim that instructs Copilot to read `SKILL.md` and follow it — the workflow and outputs are identical to the CLI path.
+
+**Reviewer responsibilities still apply**
 
 - **You own the review.** AI-generated feedback is a starting point, not the final word. Read each comment, drop the ones that are wrong or low-value, and refine the rest before posting.
 - **Verify line numbers, paths, and claims against the actual diff.** The skill produces a script you can edit; do not run it blind.
