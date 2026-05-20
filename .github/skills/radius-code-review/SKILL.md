@@ -164,7 +164,7 @@ REVIEW_BODY="Overall assessment goes here."
 # One object per inline comment. Use --arg to escape body text safely.
 COMMENTS_JSON=$(jq -n '
 [
-  {path: $p1, line: 1, body: $b1}
+    {path: $p1, line: 1, side: "RIGHT", body: $b1}
 ]
 ' \
     --arg p1 "path/to/file.ext" \
