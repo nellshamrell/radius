@@ -115,12 +115,13 @@ If you use GitHub Copilot, you can run the [`radius-code-review`](../../../.gith
 **Prerequisites**
 
 - Authenticated [`gh` CLI](https://cli.github.com/) and [`jq`](https://jqlang.org/) installed locally.
-- One of: [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-cli), or VS Code with the [GitHub Copilot Chat](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat) extension (with prompt files enabled — see VS Code's [prompt files docs](https://code.visualstudio.com/docs/copilot/copilot-customization#_prompt-files-experimental)).
+- One of: the [GitHub Copilot app](https://github.com/features/copilot), [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-cli), or VS Code with the [GitHub Copilot Chat](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat) extension (with prompt files enabled — see VS Code's [prompt files docs](https://code.visualstudio.com/docs/copilot/copilot-customization#_prompt-files-experimental)).
 
 **Suggested workflow**
 
 1. Push your branch and open the pull request.
 2. Run the skill against your PR using one of:
+   - **GitHub Copilot app**: open Copilot for this repository and ask `Use the radius-code-review skill to review PR #<your-pr-number>.` (or `/radius-code-review Review PR #<your-pr-number>`).
    - **Copilot CLI** (from the repo root): `/radius-code-review Review PR #<your-pr-number>`
    - **VS Code Copilot Chat**: type `/radius.code-review` in the chat input; VS Code will pick up `.github/prompts/radius.code-review.prompt.md` and prompt you for the PR number.
 3. Read the generated `pr-analysis-<n>.md` and `pr-review-<n>.md` under `.copilot-tracking/`. Treat the output as a draft, not a verdict.

@@ -29,6 +29,7 @@ If you use GitHub Copilot (CLI or the VS Code extension), the repository ships a
 - Authenticated [`gh` CLI](https://cli.github.com/) (the skill uses it to fetch PR metadata and diffs).
 - [`jq`](https://jqlang.org/) installed locally (the generated posting script depends on it).
 - One of:
+  - The [GitHub Copilot app](https://github.com/features/copilot).
   - [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-cli), or
   - VS Code with the [GitHub Copilot Chat](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat) extension. Prompt files must be enabled — see VS Code's [prompt files documentation](https://code.visualstudio.com/docs/copilot/copilot-customization#_prompt-files-experimental).
 
@@ -41,6 +42,22 @@ Run the CLI from the repository root, then in the chat session enter:
 ```
 
 The skill is auto-discovered from `.github/skills/`. It will fetch the PR, analyze each changed file, and write the three artifacts to `.copilot-tracking/`.
+
+**From the GitHub Copilot app**
+
+Open Copilot for this repository, then ask:
+
+```text
+Use the radius-code-review skill to review PR #<pr-number>.
+```
+
+You can also use:
+
+```text
+/radius-code-review Review PR #<pr-number>
+```
+
+The app will invoke the skill, then generate the same `.copilot-tracking/` artifacts as the CLI flow.
 
 **From VS Code Copilot Chat**
 
@@ -228,4 +245,3 @@ We encourage anyone to report a [code of conduct](https://github.com/radius-proj
 It is **explicitly** a responsibility of approvers and maintainers to report a violation if they suspect one. If a code of conduct violation occurs in a pull-request, follow the instructions [here](https://docs.github.com/en/communities/moderating-comments-and-conversations/managing-disruptive-comments) to minimize the comment and report the violation.
 
 Approvers and maintainers (or anyone else with write-access) **MUST NOT** edit any *other* contributor's comments to maintain trust and transparency. If you do this by accident, please restore the original content and apologize with your own comment. 
-
